@@ -9,6 +9,12 @@ export type AcceptedSyncOp = {
   serverVersion: number;
   record?: JsonRecord;
 };
+export type AccountDefinition<TFields extends FieldMap = FieldMap> = {
+  readonly kind: 'account';
+  readonly fields: TFields;
+  readonly schema: z.ZodObject<TFields>;
+};
+export type AccountKey<TSchema extends SyncSchema> = { [K in keyof TSchema]: TSchema[K] extends AccountDefinition ? K : never }[keyof TSchema];
 export type CollectionChanges = {
   upserted: Array<{
     id: string;
@@ -20,6 +26,12 @@ export type CollectionChanges = {
     serverVersion: number;
   }>;
 };
+export type CollectionDefinition<TFields extends FieldMap = FieldMap> = {
+  readonly kind: 'collection';
+  readonly fields: TFields;
+  readonly schema: z.ZodObject<TFields>;
+};
+export type CollectionKey<TSchema extends SyncSchema> = { [K in keyof TSchema]: TSchema[K] extends CollectionDefinition ? K : never }[keyof TSchema];
 export type CreateSyncOp = {
   mutationId: string;
   collection: string;
@@ -35,6 +47,9 @@ export type DeleteSyncOp = {
   id: string;
   baseServerVersion: number | null;
 };
+export type FieldMap = Record<string, FieldSchema>;
+export type FieldSchema = z.ZodType<unknown>;
+export type InferFields<TFields extends FieldMap> = { -readonly [K in keyof TFields]: z.output<TFields[K]> };
 export type JsonRecord = Record<string, JsonValue>;
 export type JsonValue = string | number | boolean | null | JsonValue[] | {
   [key: string]: JsonValue;
@@ -48,6 +63,8 @@ export type RejectedSyncOp = {
   serverRecord?: JsonRecord;
   serverVersion?: number;
 };
+export type SchemaDefinition<TFields extends FieldMap = FieldMap> = AccountDefinition<TFields> | CollectionDefinition<TFields>;
+export type SchemaKind = 'account' | 'collection';
 export type SyncError = {
   reason: SyncRejectionReason | 'network' | 'auth';
   message?: string;
@@ -66,6 +83,7 @@ export type SyncResponse = {
   rejected: RejectedSyncOp[];
   changes: Record<string, CollectionChanges>;
 };
+export type SyncSchema = Record<string, SchemaDefinition>;
 export type UpdateSyncOp = {
   mutationId: string;
   collection: string;
@@ -78,12 +96,29 @@ export type UpdateSyncOp = {
 // #endregion
 
 // #region Functions
+export declare function assertJsonRecord(_: unknown, _?: string): asserts value is JsonRecord;
+export declare function defineAccount<const TFields extends FieldMap>(_: {
+  fields: TFields;
+}): AccountDefinition<TFields>;
+export declare function defineCollection<const TFields extends FieldMap>(_: {
+  fields: TFields;
+}): CollectionDefinition<TFields>;
+export declare function defineLocalState<const TFields extends FieldMap>(_: TFields): z.ZodObject<TFields>;
+export declare function getAccountKey<TSchema extends SyncSchema>(_: TSchema): AccountKey<TSchema>;
+export declare function getCollectionDefinition(_: SyncSchema, _: string): SchemaDefinition | undefined;
+export declare function getCollectionKeys<TSchema extends SyncSchema>(_: TSchema): Array<CollectionKey<TSchema>>;
+export declare function getDefaults<TFields extends FieldMap>(_: SchemaDefinition<TFields>): InferFields<TFields>;
 export declare function isJsonRecord(_: unknown): value is JsonRecord;
+export declare function parseLocalState<TFields extends FieldMap>(_: TFields, _: unknown): InferFields<TFields>;
+export declare function parsePatch<TFields extends FieldMap>(_: SchemaDefinition<TFields>, _: unknown): Partial<InferFields<TFields>>;
+export declare function parseRecord<TFields extends FieldMap>(_: SchemaDefinition<TFields>, _: unknown): InferFields<TFields>;
 export declare function parseSyncRequest(_: unknown): SyncRequest;
 export declare function parseSyncResponse(_: unknown): SyncResponse;
 // #endregion
 
 // #region Variables
+export declare const ACCOUNT_COLLECTION: string;
+export declare const ACCOUNT_ID: string;
 export declare const collectionChangesSchema: z.ZodType<CollectionChanges>;
 export declare const jsonRecordSchema: z.ZodType<JsonRecord>;
 export declare const jsonValueSchema: z.ZodType<JsonValue>;
@@ -93,28 +128,5 @@ export declare const syncResponseSchema: z.ZodType<SyncResponse>;
 // #endregion
 
 // #region Other
-export { ACCOUNT_COLLECTION }
-export { ACCOUNT_ID }
-export { AccountDefinition }
-export { AccountKey }
-export { assertJsonRecord }
-export { CollectionDefinition }
-export { CollectionKey }
-export { defineAccount }
-export { defineCollection }
-export { defineLocalState }
-export { FieldMap }
-export { FieldSchema }
-export { getAccountKey }
-export { getCollectionDefinition }
-export { getCollectionKeys }
-export { getDefaults }
 export { infer }
-export { InferFields }
-export { parseLocalState }
-export { parsePatch }
-export { parseRecord }
-export { SchemaDefinition }
-export { SchemaKind }
-export { SyncSchema }
 // #endregion

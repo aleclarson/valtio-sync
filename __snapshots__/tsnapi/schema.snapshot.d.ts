@@ -16,7 +16,6 @@ export type CollectionDefinition<TFields extends FieldMap = FieldMap> = {
 export type CollectionKey<TSchema extends SyncSchema> = { [K in keyof TSchema]: TSchema[K] extends CollectionDefinition ? K : never }[keyof TSchema];
 export type FieldMap = Record<string, FieldSchema>;
 export type FieldSchema = z.ZodType<unknown>;
-export type infer<TDefinition> = TDefinition extends SchemaDefinition<infer TFields> ? InferFields<TFields> : never;
 export type InferFields<TFields extends FieldMap> = { -readonly [K in keyof TFields]: z.output<TFields[K]> };
 export type SchemaDefinition<TFields extends FieldMap = FieldMap> = AccountDefinition<TFields> | CollectionDefinition<TFields>;
 export type SchemaKind = 'account' | 'collection';
@@ -44,4 +43,8 @@ export declare function parseRecord<TFields extends FieldMap>(_: SchemaDefinitio
 // #region Variables
 export declare const ACCOUNT_COLLECTION: string;
 export declare const ACCOUNT_ID: string;
+// #endregion
+
+// #region Other
+export { infer }
 // #endregion

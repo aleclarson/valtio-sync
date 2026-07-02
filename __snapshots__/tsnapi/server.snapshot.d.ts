@@ -9,6 +9,11 @@ export type AcceptedSyncOp = {
   serverVersion: number;
   record?: JsonRecord;
 };
+export type AccountDefinition<TFields extends FieldMap = FieldMap> = {
+  readonly kind: 'account';
+  readonly fields: TFields;
+  readonly schema: z.ZodObject<TFields>;
+};
 export type AccountServerHandlers<TContext> = {
   readChanges?: (_: ServerHandlerContext<TContext> & {
     since: number | null;
@@ -29,6 +34,11 @@ export type CollectionChanges = {
     id: string;
     serverVersion: number;
   }>;
+};
+export type CollectionDefinition<TFields extends FieldMap = FieldMap> = {
+  readonly kind: 'collection';
+  readonly fields: TFields;
+  readonly schema: z.ZodObject<TFields>;
 };
 export type CollectionServerHandlers<TContext> = {
   readChanges?: (_: ServerHandlerContext<TContext> & {
@@ -62,6 +72,8 @@ export type DeleteSyncOp = {
   id: string;
   baseServerVersion: number | null;
 };
+export type FieldMap = Record<string, FieldSchema>;
+export type InferFields<TFields extends FieldMap> = { -readonly [K in keyof TFields]: z.output<TFields[K]> };
 export type JsonRecord = Record<string, JsonValue>;
 export type JsonValue = string | number | boolean | null | JsonValue[] | {
   [key: string]: JsonValue;
@@ -106,6 +118,7 @@ export type SyncResponse = {
   rejected: RejectedSyncOp[];
   changes: Record<string, CollectionChanges>;
 };
+export type SyncSchema = Record<string, SchemaDefinition>;
 export type UpdateSyncOp = {
   mutationId: string;
   collection: string;
@@ -145,10 +158,5 @@ export declare function valtioSync<const TSchema extends SyncSchema, TContext = 
 // #endregion
 
 // #region Other
-export { AccountDefinition }
-export { CollectionDefinition }
-export { FieldMap }
 export { infer }
-export { InferFields }
-export { SyncSchema }
 // #endregion
