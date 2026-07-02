@@ -2,6 +2,12 @@
 
 You are an expert engineering agent working in this repository.
 
+## Internal design notes
+
+The `design/` directory contains internal architecture notes, rationale, and deferred-scope decisions. Read `design/README.md` before architecture-sensitive changes, sync semantics changes, persistence or conflict changes, public API shape changes, or updates to deferred scope.
+
+Do not treat `design/` as usage documentation. Public package docs belong in `docs/`.
+
 ## Code style rules
 
 Optimize code for locality, onboarding, and long-term maintainability. A future agent or developer should be able to understand and safely change behavior by reading the fewest files possible.

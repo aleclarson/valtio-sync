@@ -1,17 +1,15 @@
-# valtio-sync Design Docs
+# valtio-sync Documentation
 
-These documents split the original package plan by concept. They describe the intended direction for `valtio-sync`: a local-first persistence and sync layer for Valtio state, focused on single-user save state rather than realtime collaboration.
+`valtio-sync` persists Valtio state locally, tracks dirty mutations, and sends those mutations to an app-owned sync endpoint. It is aimed at single-user save state, not realtime collaboration.
 
-Read in this order:
+Start here:
 
-- [Product Positioning](product-positioning.md)
-- [Package API](package-api.md)
-- [State Model](state-model.md)
-- [Local Persistence](local-persistence.md)
-- [Mutation Lifecycle](mutation-lifecycle.md)
-- [Sync Model](sync-model.md)
-- [Server Integration](server-integration.md)
-- [Queries](queries.md)
-- [v1 Scope and Testing](v1-scope.md)
+- [Quickstart](quickstart.md)
+- [Schemas](schema.md)
+- [Client API](client.md)
+- [Server API](server.md)
+- [Drizzle Helper](drizzle.md)
+- [Testing](testing.md)
+- [Troubleshooting](troubleshooting.md)
 
-Each concept document starts with product and architecture decisions, then keeps concrete API shapes, storage shapes, and protocol sketches in an `Implementation Details` section at the bottom.
+The app still owns authentication, authorization, database schema, and business rules. `valtio-sync` only defines the client mutation model, local cache behavior, and sync request/response contract.

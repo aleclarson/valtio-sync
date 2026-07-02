@@ -38,6 +38,6 @@ vs.collections.todos.records.todo_1.completed = true;
 await vs.sync();
 ```
 
-## Design docs
+## Documentation
 
-The current package design is split across [docs](docs/README.md).
+Usage documentation lives in [docs](docs/README.md).
