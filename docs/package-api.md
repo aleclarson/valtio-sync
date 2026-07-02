@@ -59,7 +59,9 @@ This split keeps shared client/server schema imports clean.
 Type inference should be supported from schema definitions:
 
 ```ts
-type Todo = vs.infer<typeof todos>;
+import type { infer } from "valtio-sync/schema";
+
+type Todo = infer<typeof todos>;
 ```
 
 The exact exported inference helper can evolve, but inferred record types should not require developers to restate synced shapes manually.
@@ -136,14 +138,16 @@ export const todos = defineCollection<typeof schema.todos>({
 Recommended collection API:
 
 ```ts
-todos.records[id].title = "New title";
+const todoCollection = vs.collections.todos;
 
-todos.create(...);
-todos.update(id, patch);
-todos.delete(id);
+todoCollection.records[id].title = "New title";
 
-todos.get(id);
-todos.list();
+todoCollection.create(...);
+todoCollection.update(id, patch);
+todoCollection.delete(id);
+
+todoCollection.get(id);
+todoCollection.list();
 ```
 
 The collection should expose an explicit `records` property instead of making the collection itself indexable. `todos[id]` is elegant, but it collides with collection methods and special properties.
@@ -151,12 +155,14 @@ The collection should expose an explicit `records` property instead of making th
 Recommended collection surface:
 
 ```ts
-todos.records; // Valtio proxy object keyed by id
-todos.create;
-todos.update;
-todos.delete;
-todos.get;
-todos.list;
-todos.flush;
-todos.sync;
+vs.collections.todos.records; // Valtio proxy object keyed by id
+vs.collections.todos.create;
+vs.collections.todos.update;
+vs.collections.todos.delete;
+vs.collections.todos.get;
+vs.collections.todos.list;
+vs.collections.todos.flush;
+vs.collections.todos.sync;
 ```
+
+The client also exposes `vs.ready`, a promise that resolves after local device/session state, IndexedDB cache, migrations, validation, and proxy hydration complete.

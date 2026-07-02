@@ -95,6 +95,8 @@ vs.debug.getLastSyncResponse();
 vs.debug.clearLocalData();
 ```
 
+The implemented client exposes these debug helpers through `vs.debug`, with `vs.ready` as the local hydration barrier.
+
 Prioritize deterministic sync tests.
 
 Required test cases:

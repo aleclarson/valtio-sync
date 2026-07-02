@@ -130,15 +130,17 @@ export const POST = valtioSync({
 
   handlers: {
     account: {
-      read: async (ctx) => ...,
-      update: async (ctx, patch) => ...,
+      readChanges: async ({ ctx, since }) => ...,
+      readSnapshot: async ({ ctx }) => ...,
+      update: async ({ ctx, op, patch }) => ...,
     },
 
     todos: {
-      read: async (ctx, input) => ...,
-      create: async (ctx, record) => ...,
-      update: async (ctx, id, patch) => ...,
-      delete: async (ctx, id) => ...,
+      readChanges: async ({ ctx, since }) => ...,
+      readSnapshot: async ({ ctx }) => ...,
+      create: async ({ ctx, op, record }) => ...,
+      update: async ({ ctx, op, patch }) => ...,
+      delete: async ({ ctx, op }) => ...,
     },
   },
 
@@ -153,9 +155,20 @@ Potential Drizzle helper concept:
 ```ts
 applyOpsWithDrizzle({
   db,
-  schema,
+  syncEvents: {
+    table: syncEvents,
+    nextSeq: async ({ tx, ctx }) => ...,
+    toRow: ({ ctx, collection, recordId, op, seq }) => ({
+      userId: ctx.user.id,
+      seq,
+      collection,
+      recordId,
+      op,
+    }),
+  },
   handlers,
-  authorize,
+  authorize: async ({ ctx, collection, op }) => ...,
+  checkConflict: async ({ tx, ctx, collection, op }) => ...,
 });
 ```
 

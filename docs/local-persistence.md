@@ -4,6 +4,8 @@ The local database is a durable SWR cache plus optimistic local writes.
 
 The client should expose state quickly from local cache. Remote sync should not block initial render.
 
+The implemented client exposes `vs.ready` for code that needs to wait until local hydration, migration, and validation are complete.
+
 ## Storage Responsibilities
 
 Synced and cached data should use IndexedDB.
