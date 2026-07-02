@@ -1,0 +1,251 @@
+import { z } from 'zod'
+import { valtioSync } from '../src/client.js'
+import { defineAccount, defineCollection } from '../src/schema.js'
+import { type StoredRecord, createMemorySyncStorage } from '../src/storage.js'
+
+const account = defineAccount({
+  fields: {
+    theme: z.enum(['light', 'dark']).default('light'),
+  },
+})
+
+const todos = defineCollection({
+  fields: {
+    id: z.string(),
+    title: z.string().default(''),
+    completed: z.boolean().default(false),
+  },
+})
+
+function jsonResponse(value: unknown, init?: ResponseInit) {
+  return new Response(JSON.stringify(value), {
+    status: 200,
+    headers: {
+      'content-type': 'application/json',
+    },
+    ...init,
+  })
+}
+
+function makeStoredTodo(id: string, title: string): StoredRecord {
+  return {
+    id,
+    data: {
+      id,
+      title,
+      completed: false,
+    },
+    meta: {
+      dirty: false,
+      deleted: false,
+      serverVersion: 1,
+      baseServerVersion: 1,
+      updatedAtClient: 0,
+      updatedByDevice: 'device_1',
+      lastSyncedAt: 0,
+      touched: [],
+    },
+  }
+}
+
+test('accepted create applies canonical record and clears dirty state', async () => {
+  const fetchSync = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    jsonResponse({
+      serverSeq: 10,
+      accepted: [
+        {
+          mutationId: 'placeholder',
+          collection: 'todos',
+          id: 'todo_1',
+          serverVersion: 4,
+          record: {
+            id: 'todo_1',
+            title: 'Canonical',
+            completed: false,
+          },
+        },
+      ],
+      rejected: [],
+      changes: {},
+    }),
+  )
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemorySyncStorage(),
+    fetch: async (input, init) => {
+      const request = JSON.parse(String(init?.body))
+      const response = await fetchSync(input, init)
+      const body = await response.json()
+      body.accepted[0].mutationId = request.ops[0].mutationId
+      return jsonResponse(body)
+    },
+  })
+  await vs.ready
+
+  vs.collections.todos.create({ id: 'todo_1', title: 'Local' })
+  await vs.sync()
+
+  expect(vs.collections.todos.get('todo_1')).toMatchObject({
+    id: 'todo_1',
+    title: 'Canonical',
+  })
+  expect(vs.status.dirty).toBe(false)
+  expect(vs.debug.getPendingOps()).toEqual([])
+  expect(vs.debug.getRecordMeta(vs.collections.todos, 'todo_1')).toMatchObject({
+    dirty: false,
+    serverVersion: 4,
+  })
+})
+
+test('rejected validation keeps optimistic value and stops retrying', async () => {
+  const fetchSync = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const request = JSON.parse(String(init?.body))
+    return jsonResponse({
+      serverSeq: 1,
+      accepted: [],
+      rejected: [
+        {
+          mutationId: request.ops[0].mutationId,
+          collection: 'todos',
+          id: 'todo_1',
+          reason: 'validation',
+          message: 'Title is too long',
+        },
+      ],
+      changes: {},
+    })
+  })
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemorySyncStorage(),
+    fetch: fetchSync,
+  })
+  await vs.ready
+
+  vs.collections.todos.create({ id: 'todo_1', title: 'Optimistic' })
+  await vs.sync()
+
+  expect(vs.collections.todos.get('todo_1')).toMatchObject({ title: 'Optimistic' })
+  expect(vs.status.dirty).toBe(false)
+  expect(vs.status.lastError).toMatchObject({
+    reason: 'validation',
+    message: 'Title is too long',
+  })
+  expect(vs.debug.getPendingOps()).toEqual([])
+})
+
+test('network failure preserves dirty record for a later retry', async () => {
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemorySyncStorage(),
+    fetch: async () => {
+      throw new Error('offline')
+    },
+  })
+  await vs.ready
+
+  vs.collections.todos.create({ id: 'todo_1', title: 'Local' })
+  await vs.sync()
+
+  expect(vs.status.dirty).toBe(true)
+  expect(vs.status.lastError).toMatchObject({ reason: 'network' })
+  expect(vs.debug.getPendingOps()).toMatchObject([
+    {
+      collection: 'todos',
+      type: 'create',
+      id: 'todo_1',
+    },
+  ])
+  vs.close()
+})
+
+test('remote changes apply to clean records', async () => {
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemorySyncStorage(),
+    fetch: async () =>
+      jsonResponse({
+        serverSeq: 2,
+        accepted: [],
+        rejected: [],
+        changes: {
+          todos: {
+            upserted: [
+              {
+                id: 'todo_1',
+                serverVersion: 2,
+                record: {
+                  id: 'todo_1',
+                  title: 'Remote',
+                  completed: true,
+                },
+              },
+            ],
+            deleted: [],
+          },
+        },
+      }),
+  })
+  await vs.ready
+
+  await vs.sync()
+
+  expect(vs.collections.todos.get('todo_1')).toMatchObject({
+    title: 'Remote',
+    completed: true,
+  })
+  expect(vs.status.dirty).toBe(false)
+})
+
+test('remote changes conflict with dirty records under rejectStale', async () => {
+  const storage = createMemorySyncStorage({
+    collections: {
+      todos: [makeStoredTodo('todo_1', 'Base')],
+    },
+  })
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage,
+    fetch: async () =>
+      jsonResponse({
+        serverSeq: 3,
+        accepted: [],
+        rejected: [],
+        changes: {
+          todos: {
+            upserted: [
+              {
+                id: 'todo_1',
+                serverVersion: 3,
+                record: {
+                  id: 'todo_1',
+                  title: 'Remote',
+                  completed: false,
+                },
+              },
+            ],
+            deleted: [],
+          },
+        },
+      }),
+  })
+  await vs.ready
+
+  vs.collections.todos.update('todo_1', { title: 'Local' })
+  await vs.sync()
+
+  expect(vs.collections.todos.get('todo_1')).toMatchObject({ title: 'Local' })
+  expect(vs.status.dirty).toBe(false)
+  expect(vs.status.lastError).toMatchObject({ reason: 'conflict' })
+  expect(vs.debug.getRecordMeta(vs.collections.todos, 'todo_1')).toMatchObject({
+    dirty: false,
+    lastError: {
+      reason: 'conflict',
+    },
+  })
+})

@@ -164,6 +164,7 @@ export type ValtioSyncClientOptions<TSchema extends SyncSchema, TDevice extends 
   device?: TDevice;
   session?: TSession;
   schemaVersion?: number;
+  conflict?: 'rejectStale' | 'lww' | 'serverWins';
   fetch?: typeof fetch;
   migrations?: Record<number, LocalMigration>;
   storage?: SyncStorage;

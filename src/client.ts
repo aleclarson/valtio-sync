@@ -8,6 +8,7 @@ import type {
   SyncRequest,
   SyncResponse,
 } from './protocol.js'
+import { parseSyncResponse } from './protocol.js'
 import {
   ACCOUNT_COLLECTION,
   ACCOUNT_ID,
@@ -143,6 +144,7 @@ export type ValtioSyncClientOptions<
   device?: TDevice
   session?: TSession
   schemaVersion?: number
+  conflict?: 'rejectStale' | 'lww' | 'serverWins'
   fetch?: typeof fetch
   migrations?: Record<number, LocalMigration>
   storage?: SyncStorage
@@ -239,6 +241,8 @@ export function valtioSync<
   let hydrating = true
   let trackingPaused = false
   let flushTimer: ReturnType<typeof setTimeout> | undefined
+  let retryTimer: ReturnType<typeof setTimeout> | undefined
+  let retryAttempt = 0
   let writeQueue = Promise.resolve()
 
   const internals: ClientInternals = {
@@ -476,6 +480,342 @@ export function valtioSync<
 
   async function sync(): Promise<void> {
     await flush()
+    if (closed || status.syncing) {
+      return
+    }
+
+    const fetchSync = options.fetch ?? globalThis.fetch
+    if (!fetchSync) {
+      setStatusError(status, {
+        reason: 'network',
+        message: 'No fetch implementation is available for valtio-sync',
+      })
+      scheduleRetry()
+      return
+    }
+
+    const request: SyncRequest = {
+      clientId: currentDeviceId(device),
+      schemaVersion,
+      lastServerSeq: accountMeta.lastServerSeq,
+      ops: [...internals.pendingOps],
+    }
+
+    internals.lastSyncRequest = request
+    status.syncing = true
+
+    try {
+      const response = await fetchSync(options.endpoint, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(request),
+      })
+
+      if (!response.ok) {
+        const message = await response.text().catch(() => response.statusText)
+        if (response.status === 401 || response.status === 403) {
+          setStatusError(status, {
+            reason: 'auth',
+            message: message || response.statusText,
+          })
+          return
+        }
+
+        setStatusError(status, {
+          reason: 'network',
+          message: message || response.statusText,
+        })
+        scheduleRetry()
+        return
+      }
+
+      const syncResponse = parseSyncResponse(await response.json())
+      internals.lastSyncResponse = syncResponse
+      status.lastError = null
+      await applySyncResponse(syncResponse, request.ops)
+      accountMeta = {
+        ...accountMeta,
+        lastServerSeq: syncResponse.serverSeq,
+      }
+      internals.accountMeta = accountMeta
+      await storage.writeAccount({
+        data: snapshotJsonRecord(account),
+        meta: accountMeta,
+      })
+      retryAttempt = 0
+      if (retryTimer) {
+        clearTimeout(retryTimer)
+        retryTimer = undefined
+      }
+      status.lastSyncAt = Date.now()
+    } catch (error) {
+      setStatusError(status, {
+        reason: 'network',
+        message: error instanceof Error ? error.message : 'Sync request failed',
+      })
+      scheduleRetry()
+    } finally {
+      status.syncing = false
+      refreshPendingOps(internals)
+      status.dirty = internals.pendingOps.length > 0
+    }
+  }
+
+  async function applySyncResponse(response: SyncResponse, sentOps: SyncOp[]) {
+    const sentByMutation = new Map(sentOps.map((op) => [op.mutationId, op]))
+
+    for (const accepted of response.accepted) {
+      const op = sentByMutation.get(accepted.mutationId)
+      if (!op) {
+        continue
+      }
+      await applyAcceptedOp(op, accepted.serverVersion, accepted.record)
+    }
+
+    for (const rejected of response.rejected) {
+      const op = sentByMutation.get(rejected.mutationId)
+      if (!op) {
+        continue
+      }
+      await applyRejectedOp(op, {
+        reason: rejected.reason,
+        message: rejected.message,
+      })
+    }
+
+    for (const [collection, changes] of Object.entries(response.changes)) {
+      for (const change of changes.upserted) {
+        await applyRemoteUpsert(collection, change.id, change.record, change.serverVersion)
+      }
+      for (const change of changes.deleted) {
+        await applyRemoteDelete(collection, change.id, change.serverVersion)
+      }
+    }
+  }
+
+  async function applyAcceptedOp(
+    op: SyncOp,
+    serverVersion: number,
+    canonicalRecord: JsonRecord | undefined,
+  ) {
+    if (op.collection === ACCOUNT_COLLECTION) {
+      const nextAccount = canonicalRecord
+        ? (parseRecord(accountDefinition, canonicalRecord) as JsonRecord)
+        : snapshotJsonRecord(account)
+      accountMeta = {
+        ...accountMeta,
+        sync: {
+          ...cleanMeta(serverVersion, currentDeviceId(device)),
+          lastSyncedAt: Date.now(),
+        },
+      }
+      internals.accountMeta = accountMeta
+      internals.accountData = nextAccount
+      runWithoutTracking(() => {
+        replaceObject(account, nextAccount)
+      })
+      return
+    }
+
+    const collectionState = collections[op.collection]
+    const definition = options.schema[op.collection]
+    if (!collectionState || !definition || definition.kind !== 'collection') {
+      return
+    }
+
+    if (op.type === 'delete') {
+      const key = metaKey(op.collection, op.id)
+      storedRecords.delete(key)
+      recordMeta.delete(key)
+      runWithoutTracking(() => {
+        delete collectionState.records[op.id]
+      })
+      await storage.deleteRecord(op.collection, op.id)
+      return
+    }
+
+    const currentRecord = collectionState.records[op.id]
+    const data = canonicalRecord
+      ? (parseRecord(definition, canonicalRecord) as JsonRecord)
+      : (currentRecord ?? storedRecords.get(metaKey(op.collection, op.id))?.data)
+
+    if (!data) {
+      return
+    }
+
+    const record: StoredRecord = {
+      id: op.id,
+      data,
+      meta: {
+        ...cleanMeta(serverVersion, currentDeviceId(device)),
+        lastSyncedAt: Date.now(),
+      },
+    }
+    runWithoutTracking(() => {
+      collectionState.records[op.id] = data
+    })
+    persistStoredRecord(op.collection, record)
+  }
+
+  async function applyRejectedOp(op: SyncOp, error: SyncError) {
+    if (op.collection === ACCOUNT_COLLECTION) {
+      accountMeta = {
+        ...accountMeta,
+        sync: {
+          ...(accountMeta.sync ?? cleanMeta(null, currentDeviceId(device))),
+          dirty: false,
+          lastError: error,
+        },
+      }
+      internals.accountMeta = accountMeta
+      await storage.writeAccount({
+        data: snapshotJsonRecord(account),
+        meta: accountMeta,
+      })
+      setStatusError(status, error)
+      return
+    }
+
+    const key = metaKey(op.collection, op.id)
+    const existing = storedRecords.get(key)
+    if (!existing) {
+      return
+    }
+
+    const rejectedRecord: StoredRecord = {
+      ...existing,
+      meta: {
+        ...existing.meta,
+        dirty: false,
+        lastError: error,
+      },
+    }
+    persistStoredRecord(op.collection, rejectedRecord)
+    setStatusError(status, error)
+  }
+
+  async function applyRemoteUpsert(
+    collection: string,
+    id: string,
+    record: JsonRecord,
+    serverVersion: number,
+  ) {
+    if (collection === ACCOUNT_COLLECTION) {
+      const syncMeta = accountMeta.sync ?? cleanMeta(null, currentDeviceId(device))
+      if (syncMeta.dirty) {
+        const error: SyncError = {
+          reason: 'conflict',
+          message: 'Remote account change conflicts with local dirty state',
+        }
+        accountMeta = {
+          ...accountMeta,
+          sync: {
+            ...syncMeta,
+            dirty: false,
+            lastError: error,
+          },
+        }
+        internals.accountMeta = accountMeta
+        setStatusError(status, error)
+        return
+      }
+
+      const parsed = parseRecord(accountDefinition, record) as JsonRecord
+      accountMeta = {
+        ...accountMeta,
+        sync: cleanMeta(serverVersion, currentDeviceId(device)),
+      }
+      internals.accountMeta = accountMeta
+      internals.accountData = parsed
+      runWithoutTracking(() => {
+        replaceObject(account, parsed)
+      })
+      return
+    }
+
+    const collectionState = collections[collection]
+    const definition = options.schema[collection]
+    if (!collectionState || !definition || definition.kind !== 'collection') {
+      return
+    }
+
+    const key = metaKey(collection, id)
+    const existing = storedRecords.get(key)
+    if (existing?.meta.dirty) {
+      const error: SyncError = {
+        reason: 'conflict',
+        message: `Remote change conflicts with local dirty record ${collection}:${id}`,
+      }
+      const conflictRecord: StoredRecord = {
+        ...existing,
+        meta: {
+          ...existing.meta,
+          dirty: false,
+          lastError: error,
+        },
+      }
+      persistStoredRecord(collection, conflictRecord)
+      setStatusError(status, error)
+      return
+    }
+
+    const parsed = parseRecord(definition, record) as JsonRecord
+    const storedRecord: StoredRecord = {
+      id,
+      data: parsed,
+      meta: cleanMeta(serverVersion, currentDeviceId(device)),
+    }
+    runWithoutTracking(() => {
+      collectionState.records[id] = parsed
+    })
+    persistStoredRecord(collection, storedRecord)
+  }
+
+  async function applyRemoteDelete(
+    collection: string,
+    id: string,
+    serverVersion: number,
+  ) {
+    const collectionState = collections[collection]
+    if (!collectionState) {
+      return
+    }
+
+    const key = metaKey(collection, id)
+    const existing = storedRecords.get(key)
+    if (existing?.meta.dirty) {
+      const error: SyncError = {
+        reason: 'conflict',
+        message: `Remote delete conflicts with local dirty record ${collection}:${id}`,
+      }
+      const conflictRecord: StoredRecord = {
+        ...existing,
+        meta: {
+          ...existing.meta,
+          dirty: false,
+          lastError: error,
+        },
+      }
+      persistStoredRecord(collection, conflictRecord)
+      setStatusError(status, error)
+      return
+    }
+
+    runWithoutTracking(() => {
+      delete collectionState.records[id]
+    })
+    storedRecords.set(key, {
+      id,
+      data: existing?.data ?? ({ id } as JsonRecord),
+      meta: {
+        ...cleanMeta(serverVersion, currentDeviceId(device)),
+        deleted: true,
+      },
+    })
+    recordMeta.set(key, storedRecords.get(key)!.meta)
+    await storage.deleteRecord(collection, id)
   }
 
   function mutateCollection(collection: string, mutation: CollectionMutation) {
@@ -696,6 +1036,22 @@ export function valtioSync<
     }, 100)
   }
 
+  function scheduleRetry() {
+    if (!status.dirty || retryTimer) {
+      return
+    }
+
+    const baseDelay = Math.min(30_000, 1_000 * 2 ** retryAttempt)
+    const jitter = 0.75 + Math.random() * 0.5
+    retryAttempt += 1
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined
+      if (status.dirty && !closed) {
+        void sync()
+      }
+    }, baseDelay * jitter)
+  }
+
   function enqueueStorageWrite(write: () => Promise<void>) {
     writeQueue = writeQueue.then(write, write).catch((error: unknown) => {
       setStatusError(status, {
@@ -762,6 +1118,12 @@ export function valtioSync<
     },
     close() {
       closed = true
+      if (flushTimer) {
+        clearTimeout(flushTimer)
+      }
+      if (retryTimer) {
+        clearTimeout(retryTimer)
+      }
       for (const unsubscribe of subscriptions) {
         unsubscribe()
       }
