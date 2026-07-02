@@ -9,6 +9,16 @@ export type AcceptedSyncOp = {
   serverVersion: number;
   record?: JsonRecord;
 };
+export type AccountServerHandlers<TContext> = {
+  readChanges?: (_: ServerHandlerContext<TContext> & {
+    since: number | null;
+  }) => ServerChangesResult | Promise<ServerChangesResult>;
+  readSnapshot?: (_: ServerHandlerContext<TContext>) => ServerChangesResult | Promise<ServerChangesResult>;
+  update?: (_: ServerHandlerContext<TContext> & {
+    op: UpdateSyncOp;
+    patch: JsonRecord;
+  }) => ServerMutationResult | Promise<ServerMutationResult>;
+};
 export type CollectionChanges = {
   upserted: Array<{
     id: string;
@@ -19,6 +29,23 @@ export type CollectionChanges = {
     id: string;
     serverVersion: number;
   }>;
+};
+export type CollectionServerHandlers<TContext> = {
+  readChanges?: (_: ServerHandlerContext<TContext> & {
+    since: number | null;
+  }) => ServerChangesResult | Promise<ServerChangesResult>;
+  readSnapshot?: (_: ServerHandlerContext<TContext>) => ServerChangesResult | Promise<ServerChangesResult>;
+  create?: (_: ServerHandlerContext<TContext> & {
+    op: CreateSyncOp;
+    record: JsonRecord;
+  }) => ServerMutationResult | Promise<ServerMutationResult>;
+  update?: (_: ServerHandlerContext<TContext> & {
+    op: UpdateSyncOp;
+    patch: JsonRecord;
+  }) => ServerMutationResult | Promise<ServerMutationResult>;
+  delete?: (_: ServerHandlerContext<TContext> & {
+    op: DeleteSyncOp;
+  }) => ServerMutationResult | Promise<ServerMutationResult>;
 };
 export type CreateSyncOp = {
   mutationId: string;
@@ -48,6 +75,19 @@ export type RejectedSyncOp = {
   serverRecord?: JsonRecord;
   serverVersion?: number;
 };
+export type ServerChangesResult = {
+  serverSeq?: number;
+  changes: CollectionChanges;
+};
+export type ServerHandlerContext<TContext> = {
+  request: Request;
+  ctx: TContext;
+};
+export type ServerHandlers<TContext> = Record<string, AccountServerHandlers<TContext> | CollectionServerHandlers<TContext>>;
+export type ServerMutationResult = {
+  serverVersion: number;
+  record?: JsonRecord;
+};
 export type SyncError = {
   reason: SyncRejectionReason | 'network' | 'auth';
   message?: string;
@@ -75,12 +115,33 @@ export type UpdateSyncOp = {
   touched: string[];
   baseServerVersion: number | null;
 };
+export type ValtioSyncServerOptions<TSchema extends SyncSchema, TContext> = {
+  schema: TSchema;
+  handlers: ServerHandlers<TContext>;
+  getContext?: (_: Request) => TContext | Promise<TContext>;
+};
+// #endregion
+
+// #region Classes
+export declare class SyncRejection extends Error {
+  reason: SyncRejectionReason;
+  serverRecord?: JsonRecord;
+  serverVersion?: number;
+  constructor(_: SyncRejectionReason, _?: string, _?: {
+    serverRecord?: JsonRecord;
+    serverVersion?: number;
+  });
+}
 // #endregion
 
 // #region Functions
 export declare function parseSyncRequest(_: unknown): SyncRequest;
 export declare function parseSyncResponse(_: unknown): SyncResponse;
-export declare function valtioSync(): never;
+export declare function rejectSync(_: SyncRejectionReason, _?: string, _?: {
+  serverRecord?: JsonRecord;
+  serverVersion?: number;
+}): never;
+export declare function valtioSync<const TSchema extends SyncSchema, TContext = undefined>(_: ValtioSyncServerOptions<TSchema, TContext>): (_: Request) => Promise<Response>;
 // #endregion
 
 // #region Other
