@@ -17,6 +17,13 @@ const todos = defineCollection({
   },
 })
 
+const clients: Array<{ close(): void }> = []
+
+function trackClient<T extends { close(): void }>(client: T): T {
+  clients.push(client)
+  return client
+}
+
 function makeStoredTodo(id: string, title: string): StoredRecord {
   return {
     id,
@@ -39,16 +46,21 @@ function makeStoredTodo(id: string, title: string): StoredRecord {
 }
 
 afterEach(() => {
+  for (const client of clients.splice(0)) {
+    client.close()
+  }
   vi.useRealTimers()
 })
 
 test('create then delete before flush sends no op', async () => {
   vi.useFakeTimers()
-  const vs = valtioSync({
-    endpoint: '/api/sync',
-    schema: { account, todos },
-    storage: createMemorySyncStorage(),
-  })
+  const vs = trackClient(
+    valtioSync({
+      endpoint: '/api/sync',
+      schema: { account, todos },
+      storage: createMemorySyncStorage(),
+    }),
+  )
   await vs.ready
 
   vs.collections.todos.create({ id: 'todo_1', title: 'Draft' })
@@ -63,15 +75,17 @@ test('create then delete before flush sends no op', async () => {
 
 test('update then update compacts to one final patch', async () => {
   vi.useFakeTimers()
-  const vs = valtioSync({
-    endpoint: '/api/sync',
-    schema: { account, todos },
-    storage: createMemorySyncStorage({
-      collections: {
-        todos: [makeStoredTodo('todo_1', 'Old')],
-      },
+  const vs = trackClient(
+    valtioSync({
+      endpoint: '/api/sync',
+      schema: { account, todos },
+      storage: createMemorySyncStorage({
+        collections: {
+          todos: [makeStoredTodo('todo_1', 'Old')],
+        },
+      }),
     }),
-  })
+  )
   await vs.ready
 
   vs.collections.todos.update('todo_1', { title: 'New' })
@@ -95,11 +109,13 @@ test('update then update compacts to one final patch', async () => {
 })
 
 test('create omits untouched defaults but includes explicitly touched defaults', async () => {
-  const vs = valtioSync({
-    endpoint: '/api/sync',
-    schema: { account, todos },
-    storage: createMemorySyncStorage(),
-  })
+  const vs = trackClient(
+    valtioSync({
+      endpoint: '/api/sync',
+      schema: { account, todos },
+      storage: createMemorySyncStorage(),
+    }),
+  )
   await vs.ready
 
   vs.collections.todos.create({ id: 'todo_1', title: 'Implicit default' })
@@ -135,15 +151,17 @@ test('create omits untouched defaults but includes explicitly touched defaults',
 
 test('direct proxy mutation becomes a dirty update after the batch window', async () => {
   vi.useFakeTimers()
-  const vs = valtioSync({
-    endpoint: '/api/sync',
-    schema: { account, todos },
-    storage: createMemorySyncStorage({
-      collections: {
-        todos: [makeStoredTodo('todo_1', 'Old')],
-      },
+  const vs = trackClient(
+    valtioSync({
+      endpoint: '/api/sync',
+      schema: { account, todos },
+      storage: createMemorySyncStorage({
+        collections: {
+          todos: [makeStoredTodo('todo_1', 'Old')],
+        },
+      }),
     }),
-  })
+  )
   await vs.ready
 
   vs.collections.todos.records.todo_1.title = 'Direct'
