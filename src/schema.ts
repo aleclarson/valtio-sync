@@ -9,7 +9,7 @@ export type FieldSchema = z.ZodType<unknown>
 export type FieldMap = Record<string, FieldSchema>
 
 export type InferFields<TFields extends FieldMap> = {
-  [K in keyof TFields]: z.output<TFields[K]>
+  -readonly [K in keyof TFields]: z.output<TFields[K]>
 }
 
 export type infer<TDefinition> = TDefinition extends SchemaDefinition<infer TFields>
@@ -98,7 +98,21 @@ export function parsePatch<TFields extends FieldMap>(
   definition: SchemaDefinition<TFields>,
   value: unknown,
 ): Partial<InferFields<TFields>> {
-  const parsed = definition.schema.partial().parse(value)
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('Expected patch to be an object')
+  }
+
+  const parsed: Record<string, unknown> = {}
+  const patch = value as Record<string, unknown>
+
+  for (const key of Object.keys(patch)) {
+    const field = definition.fields[key]
+    if (!field) {
+      throw new Error(`Unknown patch field: ${key}`)
+    }
+    parsed[key] = field.parse(patch[key])
+  }
+
   assertJsonRecord(parsed, 'Synced patches must be JSON-serializable')
   return parsed as Partial<InferFields<TFields>>
 }

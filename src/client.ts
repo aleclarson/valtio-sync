@@ -1,4 +1,5 @@
-import { proxy, snapshot, subscribe } from 'valtio/vanilla'
+import { proxy, snapshot, subscribe, unstable_enableOp } from 'valtio/vanilla'
+import type { INTERNAL_Op } from 'valtio/vanilla'
 import type {
   JsonRecord,
   JsonValue,
@@ -8,6 +9,8 @@ import type {
   SyncResponse,
 } from './protocol.js'
 import {
+  ACCOUNT_COLLECTION,
+  ACCOUNT_ID,
   type AccountDefinition,
   type CollectionDefinition,
   type CollectionKey,
@@ -18,6 +21,7 @@ import {
   getCollectionKeys,
   getDefaults,
   parseLocalState,
+  parsePatch,
   parseRecord,
 } from './schema.js'
 import {
@@ -152,12 +156,34 @@ type ClientInternals = {
   storage: SyncStorage
   status: ValtioSyncStatus
   accountMeta: StoredAccount['meta']
+  accountData: JsonRecord
   recordMeta: Map<string, StoredRecord['meta']>
+  storedRecords: Map<string, StoredRecord>
   recordCollections: Map<string, string>
   pendingOps: SyncOp[]
   lastSyncRequest: SyncRequest | null
   lastSyncResponse: SyncResponse | null
+  flush(): Promise<void>
+  sync(): Promise<void>
+  mutateCollection(collection: string, mutation: CollectionMutation): void
 }
+
+type CollectionMutation =
+  | {
+      type: 'create'
+      value: JsonRecord
+    }
+  | {
+      type: 'update'
+      id: string
+      patch: JsonRecord
+    }
+  | {
+      type: 'delete'
+      id: string
+    }
+
+unstable_enableOp()
 
 export function valtioSync<
   const TSchema extends SyncSchema,
@@ -189,15 +215,17 @@ export function valtioSync<
       collections: collectionKeys,
       indexedDB: options.indexedDB,
     })
-  const localStorage = options.localStorage ?? globalThis.localStorage ?? createMemoryWebStorage()
+  const localStorage =
+    options.localStorage ?? getBrowserStorage('localStorage') ?? createMemoryWebStorage()
   const sessionStorage =
-    options.sessionStorage ?? globalThis.sessionStorage ?? createMemoryWebStorage()
+    options.sessionStorage ?? getBrowserStorage('sessionStorage') ?? createMemoryWebStorage()
   const deviceKey = storageKey(namespace, 'device')
   const sessionKey = storageKey(namespace, 'session')
   const account = proxy<JsonRecord>(getDefaults(accountDefinition) as JsonRecord)
   const device = proxy<JsonRecord>(getLocalDefaults(options.device))
   const session = proxy<JsonRecord>(getLocalDefaults(options.session))
   const recordMeta = new Map<string, StoredRecord['meta']>()
+  const storedRecords = new Map<string, StoredRecord>()
   const recordCollections = new Map<string, string>()
   const collections: Record<string, SyncedCollection> = {}
   const subscriptions: Array<() => void> = []
@@ -205,19 +233,28 @@ export function valtioSync<
   let accountMeta: StoredAccount['meta'] = {
     schemaVersion,
     lastServerSeq: null,
+    sync: cleanMeta(null, 'system'),
   }
   let closed = false
   let hydrating = true
+  let trackingPaused = false
+  let flushTimer: ReturnType<typeof setTimeout> | undefined
+  let writeQueue = Promise.resolve()
 
   const internals: ClientInternals = {
     storage,
     status,
     accountMeta,
+    accountData: snapshotJsonRecord(account),
     recordMeta,
+    storedRecords,
     recordCollections,
     pendingOps: [],
     lastSyncRequest: null,
     lastSyncResponse: null,
+    flush: async () => flush(),
+    sync: async () => sync(),
+    mutateCollection: (collection, mutation) => mutateCollection(collection, mutation),
   }
 
   for (const key of collectionKeys) {
@@ -238,15 +275,31 @@ export function valtioSync<
       if (!hydrating) {
         persistWebState(localStorage, deviceKey, snapshotJsonRecord(device), status)
       }
-    }),
+    }, true),
   )
   subscriptions.push(
     subscribe(session, () => {
       if (!hydrating) {
         persistWebState(sessionStorage, sessionKey, snapshotJsonRecord(session), status)
       }
-    }),
+    }, true),
   )
+  subscriptions.push(
+    subscribe(account, (ops) => {
+      if (!hydrating && !trackingPaused) {
+        void markAccountDirty(ops)
+      }
+    }, true),
+  )
+  for (const [collection, collectionState] of Object.entries(collections)) {
+    subscriptions.push(
+      subscribe(collectionState.records, (ops) => {
+        if (!hydrating && !trackingPaused) {
+          void markRecordMutations(collection, ops)
+        }
+      }, true),
+    )
+  }
 
   if (channel) {
     channel.onmessage = (event) => {
@@ -337,8 +390,10 @@ export function valtioSync<
     accountMeta = {
       schemaVersion,
       lastServerSeq: storedAccount?.meta.lastServerSeq ?? accountMeta.lastServerSeq,
+      sync: storedAccount?.meta.sync ?? accountMeta.sync ?? cleanMeta(null, 'system'),
     }
     internals.accountMeta = accountMeta
+    internals.accountData = parsed
   }
 
   async function hydrateCollection(collection: string) {
@@ -362,6 +417,10 @@ export function valtioSync<
       try {
         const parsed = parseRecord(definition, record.data) as JsonRecord
         recordMeta.set(metaKey(collection, record.id), record.meta)
+        storedRecords.set(metaKey(collection, record.id), {
+          ...record,
+          data: parsed,
+        })
         recordCollections.set(collectionState.name, collection)
         if (!record.meta.deleted) {
           nextRecords[record.id] = parsed
@@ -387,19 +446,276 @@ export function valtioSync<
         replaceObject(collection.records, {})
       }
       recordMeta.clear()
+      storedRecords.clear()
+      internals.pendingOps = []
       status.dirty = false
       status.lastError = null
       accountMeta = {
         schemaVersion,
         lastServerSeq: null,
+        sync: cleanMeta(null, 'system'),
       }
       internals.accountMeta = accountMeta
+      internals.accountData = snapshotJsonRecord(account)
     } finally {
       hydrating = wasHydrating
     }
   }
 
+  async function flush(): Promise<void> {
+    if (flushTimer) {
+      clearTimeout(flushTimer)
+      flushTimer = undefined
+    }
+    if (!status.hydrated) {
+      await ready
+    }
+    await writeQueue
+    refreshPendingOps(internals)
+  }
+
+  async function sync(): Promise<void> {
+    await flush()
+  }
+
+  function mutateCollection(collection: string, mutation: CollectionMutation) {
+    const definition = options.schema[collection]
+    const collectionState = collections[collection]
+
+    if (!definition || definition.kind !== 'collection' || !collectionState) {
+      throw new Error(`Unknown synced collection: ${collection}`)
+    }
+
+    if (mutation.type === 'create') {
+      const id = String(mutation.value.id ?? createId())
+      const key = metaKey(collection, id)
+      const existing = storedRecords.get(key)
+
+      if (existing?.meta.deleted) {
+        throw new Error(`Cannot recreate deleted record ${collection}:${id}`)
+      }
+      if (existing) {
+        throw new Error(`Cannot create existing record ${collection}:${id}`)
+      }
+
+      const parsed = parseRecord(definition, {
+        ...getDefaults(definition),
+        ...mutation.value,
+        id,
+      }) as JsonRecord
+      const touched = unique(['id', ...Object.keys(mutation.value)])
+      const meta = dirtyMeta(cleanMeta(null, currentDeviceId(device)), touched)
+
+      runWithoutTracking(() => {
+        collectionState.records[id] = parsed
+      })
+      persistStoredRecord(collection, {
+        id,
+        data: parsed,
+        meta,
+      })
+      markDirtyState()
+      return
+    }
+
+    if (mutation.type === 'update') {
+      const current = collectionState.records[mutation.id]
+      if (!current) {
+        throw new Error(`Cannot update missing record ${collection}:${mutation.id}`)
+      }
+
+      const patch = parsePatch(definition, mutation.patch) as JsonRecord
+      const parsed = parseRecord(definition, {
+        ...current,
+        ...patch,
+      }) as JsonRecord
+      const key = metaKey(collection, mutation.id)
+      const existing = storedRecords.get(key)
+
+      if (existing?.meta.deleted) {
+        throw new Error(`Cannot update deleted record ${collection}:${mutation.id}`)
+      }
+
+      runWithoutTracking(() => {
+        collectionState.records[mutation.id] = parsed
+      })
+      persistStoredRecord(collection, {
+        id: mutation.id,
+        data: parsed,
+        meta: dirtyMeta(
+          existing?.meta ?? cleanMeta(null, currentDeviceId(device)),
+          Object.keys(patch),
+        ),
+      })
+      markDirtyState()
+      return
+    }
+
+    const key = metaKey(collection, mutation.id)
+    const existing = storedRecords.get(key)
+    const current = collectionState.records[mutation.id]
+
+    if (!existing && !current) {
+      return
+    }
+
+    runWithoutTracking(() => {
+      delete collectionState.records[mutation.id]
+    })
+
+    if (existing && existing.meta.serverVersion == null && existing.meta.dirty) {
+      storedRecords.delete(key)
+      recordMeta.delete(key)
+      enqueueStorageWrite(() => storage.deleteRecord(collection, mutation.id))
+      refreshPendingOps(internals)
+      status.dirty = internals.pendingOps.length > 0
+      return
+    }
+
+    const deletedRecord: StoredRecord = {
+      id: mutation.id,
+      data: existing?.data ?? current ?? ({ id: mutation.id } as JsonRecord),
+      meta: {
+        ...dirtyMeta(existing?.meta ?? cleanMeta(null, currentDeviceId(device)), []),
+        deleted: true,
+      },
+    }
+    persistStoredRecord(collection, deletedRecord)
+    markDirtyState()
+  }
+
+  function markAccountDirty(ops: INTERNAL_Op[]) {
+    const touched = touchedFieldsFromOps(ops, 0)
+    if (touched.length === 0) {
+      return
+    }
+
+    try {
+      const parsed = parseRecord(accountDefinition, snapshotJsonRecord(account)) as JsonRecord
+      internals.accountData = parsed
+      accountMeta = {
+        ...accountMeta,
+        sync: dirtyMeta(accountMeta.sync ?? cleanMeta(null, currentDeviceId(device)), touched),
+      }
+      internals.accountMeta = accountMeta
+      enqueueStorageWrite(() =>
+        storage.writeAccount({
+          data: parsed,
+          meta: accountMeta,
+        }),
+      )
+      markDirtyState()
+    } catch (error) {
+      setStatusError(status, {
+        reason: 'validation',
+        message: error instanceof Error ? error.message : 'Invalid account mutation',
+      })
+    }
+  }
+
+  function markRecordMutations(collection: string, ops: INTERNAL_Op[]) {
+    const definition = options.schema[collection]
+    const collectionState = collections[collection]
+    if (!definition || definition.kind !== 'collection' || !collectionState) {
+      return
+    }
+
+    const touchedById = new Map<string, string[]>()
+    const deletedIds = new Set<string>()
+
+    for (const op of ops) {
+      const path = op[1]
+      const id = path[0]
+      if (typeof id !== 'string') {
+        continue
+      }
+      if (op[0] === 'delete' && path.length === 1) {
+        deletedIds.add(id)
+        continue
+      }
+
+      const touchedField = path[1]
+      const fields =
+        typeof touchedField === 'string'
+          ? [touchedField]
+          : Object.keys(collectionState.records[id] ?? {})
+      touchedById.set(id, unique([...(touchedById.get(id) ?? []), ...fields]))
+    }
+
+    for (const id of deletedIds) {
+      mutateCollection(collection, {
+        type: 'delete',
+        id,
+      })
+    }
+
+    for (const [id, touched] of touchedById) {
+      const current = collectionState.records[id]
+      if (!current) {
+        continue
+      }
+
+      try {
+        const parsed = parseRecord(definition, current) as JsonRecord
+        const key = metaKey(collection, id)
+        const existing = storedRecords.get(key)
+        persistStoredRecord(collection, {
+          id,
+          data: parsed,
+          meta: dirtyMeta(existing?.meta ?? cleanMeta(null, currentDeviceId(device)), touched),
+        })
+        markDirtyState()
+      } catch (error) {
+        setStatusError(status, {
+          reason: 'validation',
+          message: error instanceof Error ? error.message : `Invalid record ${collection}:${id}`,
+        })
+      }
+    }
+  }
+
+  function persistStoredRecord(collection: string, record: StoredRecord) {
+    const key = metaKey(collection, record.id)
+    storedRecords.set(key, record)
+    recordMeta.set(key, record.meta)
+    enqueueStorageWrite(() => storage.writeRecord(collection, record))
+  }
+
+  function markDirtyState() {
+    refreshPendingOps(internals)
+    status.dirty = internals.pendingOps.length > 0
+    scheduleFlush()
+  }
+
+  function scheduleFlush() {
+    if (flushTimer) {
+      clearTimeout(flushTimer)
+    }
+    flushTimer = setTimeout(() => {
+      void flush()
+    }, 100)
+  }
+
+  function enqueueStorageWrite(write: () => Promise<void>) {
+    writeQueue = writeQueue.then(write, write).catch((error: unknown) => {
+      setStatusError(status, {
+        reason: 'server_error',
+        message: error instanceof Error ? error.message : 'Failed to persist local mutation',
+      })
+    })
+  }
+
+  function runWithoutTracking<T>(fn: () => T): T {
+    trackingPaused = true
+    try {
+      return fn()
+    } finally {
+      trackingPaused = false
+    }
+  }
+
   const clearLocalData = async (): Promise<void> => {
+    await writeQueue
     await storage.clearAll()
     await resetProxiesToDefaults()
     await Promise.resolve()
@@ -409,14 +725,17 @@ export function valtioSync<
   }
 
   const clearCollection = async (collection: SyncedCollection): Promise<void> => {
+    await writeQueue
     const collectionName = recordCollections.get(collection.name) ?? collection.name
     await storage.clearCollection(collectionName)
     replaceObject(collection.records, {})
     for (const key of recordMeta.keys()) {
       if (key.startsWith(`${collectionName}:`)) {
         recordMeta.delete(key)
+        storedRecords.delete(key)
       }
     }
+    refreshPendingOps(internals)
     channel?.postMessage({
       namespace,
       type: 'collectionChanged',
@@ -434,8 +753,8 @@ export function valtioSync<
     session: session as LocalState<TSession>,
     status,
     ready,
-    async flush() {},
-    async sync() {},
+    flush,
+    sync,
     clearLocalData,
     clearCollection,
     async reset() {
@@ -451,7 +770,17 @@ export function valtioSync<
     },
     debug: {
       getStatus: () => snapshot(status) as ValtioSyncStatus,
-      getDirtyRecords: () => [],
+      getDirtyRecords: () =>
+        [...storedRecords.entries()]
+          .filter(([, record]) => record.meta.dirty)
+          .map(([key, record]) => {
+            const separator = key.indexOf(':')
+            return {
+              collection: key.slice(0, separator),
+              id: key.slice(separator + 1),
+              record,
+            }
+          }),
       getPendingOps: () => [...internals.pendingOps],
       getRecordMeta: (collection: SyncedCollection, id: string) =>
         recordMeta.get(metaKey(recordCollections.get(collection.name) ?? collection.name, id)),
@@ -472,14 +801,29 @@ function makeCollection(
   const collection: SyncedCollection = {
     name,
     records,
-    create() {
-      throw new Error('Collection create is not implemented yet')
+    create(value) {
+      const id = String(value.id ?? createId())
+      internals.mutateCollection(name, {
+        type: 'create',
+        value: {
+          ...value,
+          id,
+        } as JsonRecord,
+      })
+      return records[id]
     },
-    update() {
-      throw new Error('Collection update is not implemented yet')
+    update(id, patch) {
+      internals.mutateCollection(name, {
+        type: 'update',
+        id,
+        patch: patch as JsonRecord,
+      })
     },
-    delete() {
-      throw new Error('Collection delete is not implemented yet')
+    delete(id) {
+      internals.mutateCollection(name, {
+        type: 'delete',
+        id,
+      })
     },
     get(id) {
       return records[id]
@@ -487,8 +831,8 @@ function makeCollection(
     list() {
       return Object.values(records)
     },
-    async flush() {},
-    async sync() {},
+    flush: internals.flush,
+    sync: internals.sync,
   }
   internals.recordCollections.set(collection.name, name)
   return collection
@@ -518,6 +862,147 @@ async function migrateLocalData(
   }
 
   return nextState
+}
+
+function refreshPendingOps(internals: ClientInternals) {
+  const ops: SyncOp[] = []
+  const accountSync = internals.accountMeta.sync
+
+  if (accountSync?.dirty && !accountSync.deleted) {
+    ops.push({
+      mutationId: accountSync.mutationId ?? createMutationId(),
+      collection: ACCOUNT_COLLECTION,
+      type: 'update',
+      id: ACCOUNT_ID,
+      patch: pickTouched(internals.accountData, accountSync.touched ?? []),
+      touched: accountSync.touched ?? [],
+      baseServerVersion: accountSync.baseServerVersion,
+    })
+  }
+
+  for (const [key, record] of internals.storedRecords) {
+    if (!record.meta.dirty) {
+      continue
+    }
+
+    const separator = key.indexOf(':')
+    const collection = key.slice(0, separator)
+    const id = key.slice(separator + 1)
+    const mutationId = record.meta.mutationId ?? createMutationId()
+
+    if (record.meta.deleted) {
+      if (record.meta.serverVersion != null) {
+        ops.push({
+          mutationId,
+          collection,
+          type: 'delete',
+          id,
+          baseServerVersion: record.meta.baseServerVersion,
+        })
+      }
+      continue
+    }
+
+    const touched = record.meta.touched ?? Object.keys(record.data)
+    if (record.meta.serverVersion == null) {
+      ops.push({
+        mutationId,
+        collection,
+        type: 'create',
+        id,
+        value: {
+          id,
+          ...pickTouched(record.data, touched),
+        },
+        touched: unique(['id', ...touched]),
+      })
+      continue
+    }
+
+    ops.push({
+      mutationId,
+      collection,
+      type: 'update',
+      id,
+      patch: pickTouched(record.data, touched),
+      touched,
+      baseServerVersion: record.meta.baseServerVersion,
+    })
+  }
+
+  internals.pendingOps = ops
+}
+
+function cleanMeta(
+  serverVersion: number | null,
+  updatedByDevice: string,
+): StoredRecord['meta'] {
+  return {
+    dirty: false,
+    deleted: false,
+    serverVersion,
+    baseServerVersion: serverVersion,
+    updatedAtClient: Date.now(),
+    updatedByDevice,
+    lastSyncedAt: null,
+    touched: [],
+  }
+}
+
+function dirtyMeta(
+  previous: StoredRecord['meta'],
+  touched: string[],
+): StoredRecord['meta'] {
+  const nextTouched = unique([...(previous.touched ?? []), ...touched])
+  return {
+    ...previous,
+    dirty: true,
+    deleted: false,
+    baseServerVersion: previous.dirty
+      ? previous.baseServerVersion
+      : previous.serverVersion,
+    updatedAtClient: Date.now(),
+    mutationId: previous.mutationId ?? createMutationId(),
+    touched: nextTouched,
+    lastError: undefined,
+  }
+}
+
+function pickTouched(record: JsonRecord, touched: string[]): JsonRecord {
+  const picked: JsonRecord = {}
+  for (const field of touched) {
+    if (field in record) {
+      picked[field] = record[field]
+    }
+  }
+  return picked
+}
+
+function touchedFieldsFromOps(ops: INTERNAL_Op[], pathIndex: number): string[] {
+  const fields = new Set<string>()
+  for (const op of ops) {
+    const field = op[1][pathIndex]
+    if (typeof field === 'string') {
+      fields.add(field)
+    }
+  }
+  return [...fields]
+}
+
+function currentDeviceId(device: JsonRecord): string {
+  return typeof device.deviceId === 'string' ? device.deviceId : 'unknown-device'
+}
+
+function createId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? createMutationId()
+}
+
+function createMutationId(): string {
+  return `mut_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)]
 }
 
 function getLocalDefaults(fields: FieldMap | undefined): JsonRecord {
@@ -677,4 +1162,16 @@ function createBroadcastChannel(namespace: string, enabled: boolean) {
   }
 
   return new BroadcastChannel(`valtio-sync:${namespace}`)
+}
+
+function getBrowserStorage(kind: 'localStorage' | 'sessionStorage'): WebStorageLike | undefined {
+  if (typeof window === 'undefined') {
+    return undefined
+  }
+
+  try {
+    return window[kind]
+  } catch {
+    return undefined
+  }
 }

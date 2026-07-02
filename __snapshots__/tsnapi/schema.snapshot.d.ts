@@ -17,7 +17,7 @@ export type CollectionKey<TSchema extends SyncSchema> = { [K in keyof TSchema]: 
 export type FieldMap = Record<string, FieldSchema>;
 export type FieldSchema = z.ZodType<unknown>;
 export type infer<TDefinition> = TDefinition extends SchemaDefinition<infer TFields> ? InferFields<TFields> : never;
-export type InferFields<TFields extends FieldMap> = { [K in keyof TFields]: z.output<TFields[K]> };
+export type InferFields<TFields extends FieldMap> = { -readonly [K in keyof TFields]: z.output<TFields[K]> };
 export type SchemaDefinition<TFields extends FieldMap = FieldMap> = AccountDefinition<TFields> | CollectionDefinition<TFields>;
 export type SchemaKind = 'account' | 'collection';
 export type SyncSchema = Record<string, SchemaDefinition>;

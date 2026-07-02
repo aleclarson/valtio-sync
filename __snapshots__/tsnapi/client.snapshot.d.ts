@@ -60,6 +60,7 @@ export type StoredAccount<TData extends JsonRecord = JsonRecord> = {
   meta: {
     schemaVersion: number;
     lastServerSeq: number | null;
+    sync?: StoredRecord['meta'];
   };
 };
 export type StoredRecord<TData extends JsonRecord = JsonRecord> = {
@@ -74,6 +75,8 @@ export type StoredRecord<TData extends JsonRecord = JsonRecord> = {
     updatedByDevice: string;
     lastSyncedAt: number | null;
     lastError?: SyncError;
+    mutationId?: string;
+    touched?: string[];
   };
 };
 export type SyncedCollection<TRecord extends JsonRecord = JsonRecord> = {

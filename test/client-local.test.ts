@@ -110,7 +110,7 @@ test('hydrates cached records after local migrations', async () => {
     title: 'Old migrated',
     completed: false,
   })
-  expect((await storage.readAccount())?.meta).toEqual({
+  expect((await storage.readAccount())?.meta).toMatchObject({
     schemaVersion: 2,
     lastServerSeq: 5,
   })
