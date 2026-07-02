@@ -154,3 +154,48 @@ test('clears persisted local data and resets proxies', async () => {
   expect(vs.device).toMatchObject({ deviceId: 'device_1' })
   expect(vs.collections.todos.list()).toEqual([])
 })
+
+test('broadcasts local collection changes to another tab', async () => {
+  if (typeof BroadcastChannel === 'undefined') {
+    return
+  }
+
+  const storage = createMemorySyncStorage()
+  const firstTab = valtioSync({
+    endpoint: '/api/sync',
+    namespace: 'user_1',
+    schema: { account, todos },
+    storage,
+    localStorage: createMemoryWebStorage(),
+    sessionStorage: createMemoryWebStorage(),
+  })
+  const secondTab = valtioSync({
+    endpoint: '/api/sync',
+    namespace: 'user_1',
+    schema: { account, todos },
+    storage,
+    localStorage: createMemoryWebStorage(),
+    sessionStorage: createMemoryWebStorage(),
+  })
+  await Promise.all([firstTab.ready, secondTab.ready])
+
+  firstTab.collections.todos.create({ id: 'todo_1', title: 'From tab one' })
+  await firstTab.flush()
+  await waitFor(() => secondTab.collections.todos.get('todo_1') !== undefined)
+
+  expect(secondTab.collections.todos.get('todo_1')).toMatchObject({
+    title: 'From tab one',
+  })
+
+  firstTab.close()
+  secondTab.close()
+})
+
+async function waitFor(assertion: () => boolean) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (assertion()) {
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}

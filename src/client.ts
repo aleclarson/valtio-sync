@@ -906,7 +906,14 @@ export function valtioSync<
     if (existing && existing.meta.serverVersion == null && existing.meta.dirty) {
       storedRecords.delete(key)
       recordMeta.delete(key)
-      enqueueStorageWrite(() => storage.deleteRecord(collection, mutation.id))
+      enqueueStorageWrite(async () => {
+        await storage.deleteRecord(collection, mutation.id)
+        channel?.postMessage({
+          namespace,
+          type: 'collectionChanged',
+          collection,
+        } satisfies BroadcastMessage)
+      })
       refreshPendingOps(internals)
       status.dirty = internals.pendingOps.length > 0
       return
@@ -961,6 +968,7 @@ export function valtioSync<
     }
 
     const touchedById = new Map<string, string[]>()
+    const wholeRecordIds = new Set<string>()
     const deletedIds = new Set<string>()
 
     for (const op of ops) {
@@ -975,11 +983,11 @@ export function valtioSync<
       }
 
       const touchedField = path[1]
-      const fields =
-        typeof touchedField === 'string'
-          ? [touchedField]
-          : Object.keys(collectionState.records[id] ?? {})
-      touchedById.set(id, unique([...(touchedById.get(id) ?? []), ...fields]))
+      if (typeof touchedField === 'string') {
+        touchedById.set(id, unique([...(touchedById.get(id) ?? []), touchedField]))
+      } else {
+        wholeRecordIds.add(id)
+      }
     }
 
     for (const id of deletedIds) {
@@ -987,6 +995,15 @@ export function valtioSync<
         type: 'delete',
         id,
       })
+    }
+
+    for (const id of wholeRecordIds) {
+      if (!touchedById.has(id)) {
+        const key = metaKey(collection, id)
+        const current = collectionState.records[id] ?? {}
+        const previous = storedRecords.get(key)?.data
+        touchedById.set(id, changedFields(previous, current))
+      }
     }
 
     for (const [id, touched] of touchedById) {
@@ -1018,7 +1035,14 @@ export function valtioSync<
     const key = metaKey(collection, record.id)
     storedRecords.set(key, record)
     recordMeta.set(key, record.meta)
-    enqueueStorageWrite(() => storage.writeRecord(collection, record))
+    enqueueStorageWrite(async () => {
+      await storage.writeRecord(collection, record)
+      channel?.postMessage({
+        namespace,
+        type: 'collectionChanged',
+        collection,
+      } satisfies BroadcastMessage)
+    })
   }
 
   function markDirtyState() {
@@ -1340,6 +1364,16 @@ function pickTouched(record: JsonRecord, touched: string[]): JsonRecord {
   return picked
 }
 
+function changedFields(previous: JsonRecord | undefined, current: JsonRecord): string[] {
+  if (!previous) {
+    return Object.keys(current)
+  }
+
+  return Object.keys(current).filter(
+    (key) => JSON.stringify(previous[key]) !== JSON.stringify(current[key]),
+  )
+}
+
 function touchedFieldsFromOps(ops: INTERNAL_Op[], pathIndex: number): string[] {
   const fields = new Set<string>()
   for (const op of ops) {
@@ -1523,7 +1557,9 @@ function createBroadcastChannel(namespace: string, enabled: boolean) {
     return null
   }
 
-  return new BroadcastChannel(`valtio-sync:${namespace}`)
+  const channel = new BroadcastChannel(`valtio-sync:${namespace}`)
+  ;(channel as BroadcastChannel & { unref?: () => void }).unref?.()
+  return channel
 }
 
 function getBrowserStorage(kind: 'localStorage' | 'sessionStorage'): WebStorageLike | undefined {

@@ -136,6 +136,59 @@ test('rejected validation keeps optimistic value and stops retrying', async () =
   expect(vs.debug.getPendingOps()).toEqual([])
 })
 
+test('rejected conflict keeps optimistic value and records conflict metadata', async () => {
+  const fetchSync = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const request = JSON.parse(String(init?.body))
+    return jsonResponse({
+      serverSeq: 2,
+      accepted: [],
+      rejected: [
+        {
+          mutationId: request.ops[0].mutationId,
+          collection: 'todos',
+          id: 'todo_1',
+          reason: 'conflict',
+          message: 'Base version is stale',
+          serverVersion: 2,
+          serverRecord: {
+            id: 'todo_1',
+            title: 'Remote',
+            completed: false,
+          },
+        },
+      ],
+      changes: {},
+    })
+  })
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemorySyncStorage({
+      collections: {
+        todos: [makeStoredTodo('todo_1', 'Base')],
+      },
+    }),
+    fetch: fetchSync,
+  })
+  await vs.ready
+
+  vs.collections.todos.update('todo_1', { title: 'Local' })
+  await vs.sync()
+
+  expect(vs.collections.todos.get('todo_1')).toMatchObject({ title: 'Local' })
+  expect(vs.status.dirty).toBe(false)
+  expect(vs.status.lastError).toMatchObject({
+    reason: 'conflict',
+    message: 'Base version is stale',
+  })
+  expect(vs.debug.getRecordMeta(vs.collections.todos, 'todo_1')).toMatchObject({
+    dirty: false,
+    lastError: {
+      reason: 'conflict',
+    },
+  })
+})
+
 test('network failure preserves dirty record for a later retry', async () => {
   const vs = valtioSync({
     endpoint: '/api/sync',
