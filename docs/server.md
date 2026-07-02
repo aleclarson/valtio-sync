@@ -51,6 +51,8 @@ Mutation handlers receive validated data:
 
 Return `{ serverVersion, record? }`. Include `record` when the server canonicalizes, fills defaults, or wants the client to replace its local value with the server value.
 
+Handlers should treat `op.mutationId` as the idempotency key for the authenticated user. This matters for retry after network failure, especially when an anonymous local cache is promoted during signup and the client sends many first-write create operations. A common implementation is a processed-mutations table keyed by user and mutation ID, or create/update handlers that can safely return the original accepted result when the same mutation is received again.
+
 Use `readChanges` when you have a durable sequence or event log:
 
 ```ts

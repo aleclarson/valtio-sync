@@ -30,6 +30,7 @@ The returned object exposes:
 - `ready`: hydration promise.
 - `flush()`: wait for pending local writes and recompute pending ops.
 - `sync()`: flush and POST pending ops to the configured endpoint.
+- `adoptLocalData(source, options)`: copy local synced state from another client, usually from an anonymous namespace into a new authenticated namespace.
 - `clearLocalData()` and `reset()`: clear local sync, device, and session state.
 - `clearCollection(collection)`: clear one collection from local storage.
 - `close()`: unsubscribe listeners, timers, channels, and storage handles.
@@ -49,6 +50,37 @@ await sync.collections.todos.sync();
 ```
 
 Direct proxy mutations and collection helper calls both become dirty sync operations. Local writes are batched briefly; call `flush()` before tests or before inspecting `debug.getPendingOps()`.
+
+## Anonymous Signup Promotion
+
+Use a stable anonymous namespace before signup:
+
+```ts
+const anonymousSync = valtioSync({
+  endpoint: "/api/sync",
+  namespace: `my-app:anon:${anonymousId}`,
+  schema: { account, todos },
+});
+```
+
+After signup succeeds and the request context is authenticated, create the new account client and adopt the anonymous local data:
+
+```ts
+const userSync = valtioSync({
+  endpoint: "/api/sync",
+  namespace: `my-app:user:${user.id}`,
+  schema: { account, todos },
+});
+
+await userSync.adoptLocalData(anonymousSync, {
+  sync: true,
+  clearSource: "afterSuccessfulSync",
+});
+```
+
+Adoption is intentionally a new-account flow. The target namespace must not already have synced account state or cached records. Imported collection records become dirty create operations, imported account state becomes a dirty account update, and the normal sync endpoint writes the data under the authenticated server context. Local-only `device` and `session` state are copied by default; pass `copyLocalState: false` or `{ device: true, session: false }` to change that.
+
+The source namespace is cleared only when `sync: true` is used, the sync finishes without dirty state or errors, and `clearSource: "afterSuccessfulSync"` is set. If the upload fails, the anonymous source cache remains available.
 
 Client options include:
 

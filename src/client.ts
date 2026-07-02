@@ -71,6 +71,18 @@ export type LocalMigration = (
   state: LocalDataSnapshot,
 ) => LocalDataSnapshot | Promise<LocalDataSnapshot>
 
+export type AdoptLocalDataOptions = {
+  mode?: 'newAccount'
+  copyLocalState?:
+    | boolean
+    | {
+        device?: boolean
+        session?: boolean
+      }
+  sync?: boolean
+  clearSource?: 'never' | 'afterSuccessfulSync'
+}
+
 export type ValtioSyncStatus = {
   hydrated: boolean
   syncing: boolean
@@ -118,6 +130,7 @@ export type ValtioSyncClient<TSchema extends SyncSchema = SyncSchema> = {
   readonly ready: Promise<void>
   flush(): Promise<void>
   sync(): Promise<void>
+  adoptLocalData(source: ValtioSyncClient, options?: AdoptLocalDataOptions): Promise<void>
   clearLocalData(): Promise<void>
   clearCollection(collection: SyncedCollection): Promise<void>
   reset(): Promise<void>
@@ -155,6 +168,8 @@ export type ValtioSyncClientOptions<
 }
 
 type ClientInternals = {
+  accountKey: string
+  collectionKeys: string[]
   storage: SyncStorage
   status: ValtioSyncStatus
   accountMeta: StoredAccount['meta']
@@ -167,7 +182,14 @@ type ClientInternals = {
   lastSyncResponse: SyncResponse | null
   flush(): Promise<void>
   sync(): Promise<void>
+  readLocalDataSnapshot(): Promise<LocalDataSnapshot>
   mutateCollection(collection: string, mutation: CollectionMutation): void
+}
+
+const clientInternalsKey = Symbol('valtio-sync client internals')
+
+type ValtioSyncClientWithInternals = ValtioSyncClient & {
+  [clientInternalsKey]: ClientInternals
 }
 
 type CollectionMutation =
@@ -246,6 +268,8 @@ export function valtioSync<
   let writeQueue = Promise.resolve()
 
   const internals: ClientInternals = {
+    accountKey: String(accountKey),
+    collectionKeys,
     storage,
     status,
     accountMeta,
@@ -258,6 +282,7 @@ export function valtioSync<
     lastSyncResponse: null,
     flush: async () => flush(),
     sync: async () => sync(),
+    readLocalDataSnapshot: async () => readLocalDataSnapshot(),
     mutateCollection: (collection, mutation) => mutateCollection(collection, mutation),
   }
 
@@ -352,8 +377,11 @@ export function valtioSync<
   }
 
   async function readLocalDataSnapshot(
-    storedAccount: StoredAccount | null,
+    storedAccount?: StoredAccount | null,
   ): Promise<LocalDataSnapshot> {
+    if (storedAccount === undefined) {
+      storedAccount = await storage.readAccount()
+    }
     const collectionsSnapshot: Record<string, StoredRecord[]> = {}
 
     for (const key of collectionKeys) {
@@ -1094,6 +1122,162 @@ export function valtioSync<
     }
   }
 
+  async function adoptLocalData(
+    source: ValtioSyncClient,
+    adoptOptions: AdoptLocalDataOptions = {},
+  ): Promise<void> {
+    const sourceInternals = getClientInternals(source)
+    const copyLocalState = adoptOptions.copyLocalState ?? true
+    const clearSource = adoptOptions.clearSource ?? 'never'
+    const shouldSync = adoptOptions.sync === true
+
+    if (adoptOptions.mode && adoptOptions.mode !== 'newAccount') {
+      throw new Error(`Unsupported local data adoption mode: ${adoptOptions.mode}`)
+    }
+    if (source === client) {
+      throw new Error('Cannot adopt local data from the same valtio-sync client')
+    }
+    if (clearSource === 'afterSuccessfulSync' && !shouldSync) {
+      throw new Error('clearSource: "afterSuccessfulSync" requires sync: true')
+    }
+    if (closed) {
+      throw new Error('Cannot adopt local data into a closed valtio-sync client')
+    }
+
+    assertCompatibleLocalDataSource(sourceInternals, String(accountKey), collectionKeys)
+
+    await Promise.all([ready, source.ready])
+    await Promise.all([flush(), sourceInternals.flush()])
+    assertNewAccountAdoptionTargetIsEmpty(internals, getDefaults(accountDefinition) as JsonRecord)
+
+    const sourceState = await sourceInternals.readLocalDataSnapshot()
+    await importNewAccountLocalData(sourceState, copyLocalState)
+
+    if (shouldSync) {
+      await sync()
+    }
+
+    if (clearSource === 'afterSuccessfulSync') {
+      if (status.dirty || status.lastError) {
+        throw new Error(
+          'Promoted local data was not fully synced; source local data was not cleared',
+        )
+      }
+      await source.clearLocalData()
+    }
+  }
+
+  async function importNewAccountLocalData(
+    sourceState: LocalDataSnapshot,
+    copyLocalState: NonNullable<AdoptLocalDataOptions['copyLocalState']>,
+  ) {
+    const nextDevice = shouldCopyLocalState(copyLocalState, 'device')
+      ? parseLocalOrDefaults(options.device, sourceState.device, status)
+      : snapshotJsonRecord(device)
+    const nextSession = shouldCopyLocalState(copyLocalState, 'session')
+      ? parseLocalOrDefaults(options.session, sourceState.session, status)
+      : snapshotJsonRecord(session)
+    const updatedByDevice = currentDeviceId(nextDevice)
+    const nextAccount = parseRecord(accountDefinition, {
+      ...getDefaults(accountDefinition),
+      ...sourceState.account,
+    }) as JsonRecord
+    const promotedCollections: Record<string, StoredRecord[]> = {}
+
+    for (const collection of collectionKeys) {
+      const definition = options.schema[collection]
+      if (!definition || definition.kind !== 'collection') {
+        continue
+      }
+
+      promotedCollections[collection] = []
+      for (const record of sourceState.collections[collection] ?? []) {
+        if (record.meta.deleted) {
+          continue
+        }
+
+        const data = parseRecord(definition, record.data) as JsonRecord
+        promotedCollections[collection].push({
+          id: record.id,
+          data,
+          meta: dirtyMeta(
+            cleanMeta(null, updatedByDevice),
+            getPromotedRecordTouchedFields(record, data),
+          ),
+        })
+      }
+    }
+
+    await writeQueue
+    await storage.clearAll()
+
+    const accountTouched = Object.keys(nextAccount)
+    accountMeta = {
+      schemaVersion,
+      lastServerSeq: null,
+      sync:
+        accountTouched.length > 0
+          ? dirtyMeta(cleanMeta(null, updatedByDevice), accountTouched)
+          : cleanMeta(null, updatedByDevice),
+    }
+    internals.accountMeta = accountMeta
+    internals.accountData = nextAccount
+
+    recordMeta.clear()
+    storedRecords.clear()
+
+    const wasHydrating = hydrating
+    hydrating = true
+    try {
+      runWithoutTracking(() => {
+        replaceObject(account, nextAccount)
+        replaceObject(device, nextDevice)
+        replaceObject(session, nextSession)
+
+        for (const collection of collectionKeys) {
+          const collectionState = collections[collection]
+          if (!collectionState) {
+            continue
+          }
+
+          const nextRecords: Record<string, JsonRecord> = {}
+          for (const record of promotedCollections[collection] ?? []) {
+            nextRecords[record.id] = record.data
+          }
+          replaceObject(collectionState.records, nextRecords)
+        }
+      })
+    } finally {
+      hydrating = wasHydrating
+    }
+
+    await storage.writeAccount({
+      data: nextAccount,
+      meta: accountMeta,
+    })
+
+    for (const collection of collectionKeys) {
+      await storage.clearCollection(collection)
+      for (const record of promotedCollections[collection] ?? []) {
+        storedRecords.set(metaKey(collection, record.id), record)
+        recordMeta.set(metaKey(collection, record.id), record.meta)
+        await storage.writeRecord(collection, record)
+      }
+      channel?.postMessage({
+        namespace,
+        type: 'collectionChanged',
+        collection,
+      } satisfies BroadcastMessage)
+    }
+
+    persistWebState(localStorage, deviceKey, nextDevice, status)
+    persistWebState(sessionStorage, sessionKey, nextSession, status)
+    status.lastError = null
+    status.lastSyncAt = null
+    refreshPendingOps(internals)
+    status.dirty = internals.pendingOps.length > 0
+  }
+
   const clearLocalData = async (): Promise<void> => {
     await writeQueue
     await storage.clearAll()
@@ -1135,6 +1319,7 @@ export function valtioSync<
     ready,
     flush,
     sync,
+    adoptLocalData,
     clearLocalData,
     clearCollection,
     async reset() {
@@ -1175,6 +1360,10 @@ export function valtioSync<
       clearLocalData,
     },
   }
+
+  Object.defineProperty(client, clientInternalsKey, {
+    value: internals,
+  })
 
   return client
 }
@@ -1510,6 +1699,75 @@ function storageKey(namespace: string, kind: 'device' | 'session') {
 
 function metaKey(collection: string, id: string) {
   return `${collection}:${id}`
+}
+
+function getClientInternals(client: ValtioSyncClient): ClientInternals {
+  const internals = (client as Partial<ValtioSyncClientWithInternals>)[clientInternalsKey]
+  if (!internals) {
+    throw new Error('Can only adopt local data from a valtio-sync client')
+  }
+  return internals
+}
+
+function assertCompatibleLocalDataSource(
+  sourceInternals: ClientInternals,
+  accountKey: string,
+  collectionKeys: string[],
+) {
+  if (sourceInternals.accountKey !== accountKey) {
+    throw new Error('Cannot adopt local data from a client with a different account schema')
+  }
+
+  const sourceCollections = [...sourceInternals.collectionKeys].sort()
+  const targetCollections = [...collectionKeys].sort()
+  if (
+    sourceCollections.length !== targetCollections.length ||
+    sourceCollections.some((collection, index) => collection !== targetCollections[index])
+  ) {
+    throw new Error('Cannot adopt local data from a client with different collections')
+  }
+}
+
+function assertNewAccountAdoptionTargetIsEmpty(
+  internals: ClientInternals,
+  defaultAccount: JsonRecord,
+) {
+  if (internals.accountMeta.lastServerSeq != null) {
+    throw new Error('Cannot adopt anonymous local data into a namespace with remote sync state')
+  }
+  if (internals.accountMeta.sync?.serverVersion != null) {
+    throw new Error('Cannot adopt anonymous local data into a namespace with remote account state')
+  }
+  if (internals.accountMeta.sync?.dirty) {
+    throw new Error('Cannot adopt anonymous local data into a dirty target account')
+  }
+  if (!jsonRecordsEqual(internals.accountData, defaultAccount)) {
+    throw new Error('Cannot adopt anonymous local data into a target account with local data')
+  }
+  if (internals.storedRecords.size > 0) {
+    throw new Error('Cannot adopt anonymous local data into a target with cached records')
+  }
+}
+
+function shouldCopyLocalState(
+  copyLocalState: NonNullable<AdoptLocalDataOptions['copyLocalState']>,
+  kind: 'device' | 'session',
+) {
+  if (typeof copyLocalState === 'boolean') {
+    return copyLocalState
+  }
+  return copyLocalState[kind] === true
+}
+
+function getPromotedRecordTouchedFields(record: StoredRecord, data: JsonRecord) {
+  if (record.meta.serverVersion == null && record.meta.touched?.length) {
+    return record.meta.touched
+  }
+  return Object.keys(data)
+}
+
+function jsonRecordsEqual(left: JsonRecord, right: JsonRecord) {
+  return JSON.stringify(left) === JSON.stringify(right)
 }
 
 function isJsonValue(value: unknown): value is JsonValue {

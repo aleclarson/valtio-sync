@@ -14,6 +14,15 @@ export type AccountDefinition<TFields extends FieldMap = FieldMap> = {
   readonly fields: TFields;
   readonly schema: z.ZodObject<TFields>;
 };
+export type AdoptLocalDataOptions = {
+  mode?: 'newAccount';
+  copyLocalState?: boolean | {
+    device?: boolean;
+    session?: boolean;
+  };
+  sync?: boolean;
+  clearSource?: 'never' | 'afterSuccessfulSync';
+};
 export type CollectionChanges = {
   upserted: Array<{
     id: string;
@@ -152,6 +161,7 @@ export type ValtioSyncClient<TSchema extends SyncSchema = SyncSchema> = {
   readonly ready: Promise<void>;
   flush(): Promise<void>;
   sync(): Promise<void>;
+  adoptLocalData(_: ValtioSyncClient, _?: AdoptLocalDataOptions): Promise<void>;
   clearLocalData(): Promise<void>;
   clearCollection(_: SyncedCollection): Promise<void>;
   reset(): Promise<void>;

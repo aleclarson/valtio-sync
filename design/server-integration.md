@@ -108,6 +108,22 @@ Reason: this gives reliable multi-device pull without requiring every app table 
 
 If an app does not want a sync event table, allow snapshot mode. The best Drizzle helper should use a sync event table.
 
+## Mutation Idempotency
+
+Clients send stable mutation IDs and may retry after the server writes data but before the response reaches the client.
+
+Server implementations should treat `mutationId` as idempotent within the authenticated user/account boundary. This is especially important for anonymous-to-new-account promotion, where a retry may contain many create operations that were already committed.
+
+Recommended behavior:
+
+```txt
+store processed mutation IDs per user/account
+return the original accepted result when a mutation ID is repeated
+write the app table change, sync event, and processed mutation record in one transaction
+```
+
+For simple applications, an equivalent idempotent create/update strategy is acceptable if it cannot create duplicate rows or conflicting sync events.
+
 ## Implementation Details
 
 Server entry point:

@@ -105,6 +105,36 @@ logout with clearLocalData:
 
 Default docs should strongly recommend clearing local data on shared devices.
 
+## Anonymous to New Account Promotion
+
+Anonymous usage should use a stable local namespace, such as:
+
+```txt
+my-app:anon:<anonymous-id>
+```
+
+After signup creates an authenticated account, the app should create a client for the new account namespace:
+
+```txt
+my-app:user:<user-id>
+```
+
+The client may adopt the anonymous namespace's local data into that new account namespace. This is a new-account flow, not an existing-account merge flow.
+
+Recommended behavior:
+
+```txt
+target namespace must not already have synced account state or cached records
+collection records are imported as dirty create state
+account state is imported as a dirty account update
+lastServerSeq is reset to null
+serverVersion/baseServerVersion are reset to null
+device/session state may be copied for UX continuity, but is never synced
+anonymous source data is cleared only after explicitly requested successful authenticated sync
+```
+
+The sync protocol should not carry anonymous identity or user identity for this flow. Server ownership still comes from authenticated request context.
+
 ## Security and Privacy
 
 Document clearly:

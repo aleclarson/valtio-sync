@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { valtioSync } from '../src/client.js'
-import { defineAccount, defineCollection } from '../src/schema.js'
+import { ACCOUNT_COLLECTION, defineAccount, defineCollection } from '../src/schema.js'
 import {
   type StoredRecord,
   createMemorySyncStorage,
@@ -38,6 +38,16 @@ function makeStoredTodo(
       lastSyncedAt: 0,
     },
   }
+}
+
+function jsonResponse(value: unknown, init?: ResponseInit) {
+  return new Response(JSON.stringify(value), {
+    status: 200,
+    headers: {
+      'content-type': 'application/json',
+    },
+    ...init,
+  })
 }
 
 test('hydrates defaults from an empty local cache', async () => {
@@ -153,6 +163,171 @@ test('clears persisted local data and resets proxies', async () => {
   expect(vs.account).toMatchObject({ theme: 'light' })
   expect(vs.device).toMatchObject({ deviceId: 'device_1' })
   expect(vs.collections.todos.list()).toEqual([])
+})
+
+test('adopts anonymous local data into a new account and clears source after sync', async () => {
+  const sourceStorage = createMemorySyncStorage()
+  const targetStorage = createMemorySyncStorage()
+  const localStorage = createMemoryWebStorage()
+  const sessionStorage = createMemoryWebStorage()
+  const syncRequests: unknown[] = []
+  const anonymous = valtioSync({
+    endpoint: '/api/sync',
+    namespace: 'anon_1',
+    schema: { account, todos },
+    device: {
+      deviceId: z.string().default('device_1'),
+    },
+    session: {
+      sidebarOpen: z.boolean().default(false),
+    },
+    storage: sourceStorage,
+    localStorage,
+    sessionStorage,
+  })
+  const signedIn = valtioSync({
+    endpoint: '/api/sync',
+    namespace: 'user_1',
+    schema: { account, todos },
+    device: {
+      deviceId: z.string().default('device_2'),
+    },
+    session: {
+      sidebarOpen: z.boolean().default(false),
+    },
+    storage: targetStorage,
+    localStorage,
+    sessionStorage,
+    fetch: async (_input, init) => {
+      const request = JSON.parse(String(init?.body))
+      syncRequests.push(request)
+      return jsonResponse({
+        serverSeq: 12,
+        accepted: request.ops.map(
+          (op: { mutationId: string; collection: string; id: string }, index: number) => ({
+            mutationId: op.mutationId,
+            collection: op.collection,
+            id: op.id,
+            serverVersion: index + 1,
+          }),
+        ),
+        rejected: [],
+        changes: {},
+      })
+    },
+  })
+  await Promise.all([anonymous.ready, signedIn.ready])
+
+  anonymous.account.theme = 'dark'
+  anonymous.device.deviceId = 'anonymous_device'
+  anonymous.session.sidebarOpen = true
+  anonymous.collections.todos.create({ id: 'todo_1', title: 'Anonymous draft' })
+
+  await signedIn.adoptLocalData(anonymous, {
+    sync: true,
+    clearSource: 'afterSuccessfulSync',
+  })
+
+  expect(signedIn.account).toMatchObject({ theme: 'dark' })
+  expect(signedIn.device).toMatchObject({ deviceId: 'anonymous_device' })
+  expect(signedIn.session).toMatchObject({ sidebarOpen: true })
+  expect(signedIn.collections.todos.get('todo_1')).toMatchObject({
+    title: 'Anonymous draft',
+  })
+  expect(signedIn.status.dirty).toBe(false)
+  expect(anonymous.collections.todos.list()).toEqual([])
+  expect(await sourceStorage.listRecords('todos')).toEqual([])
+  expect(syncRequests).toHaveLength(1)
+  expect(syncRequests[0]).toMatchObject({
+    lastServerSeq: null,
+    ops: [
+      {
+        collection: ACCOUNT_COLLECTION,
+        type: 'update',
+        id: 'singleton',
+        patch: {
+          theme: 'dark',
+        },
+        baseServerVersion: null,
+      },
+      {
+        collection: 'todos',
+        type: 'create',
+        id: 'todo_1',
+        value: {
+          id: 'todo_1',
+          title: 'Anonymous draft',
+        },
+      },
+    ],
+  })
+})
+
+test('keeps anonymous source data when promoted sync fails', async () => {
+  const sourceStorage = createMemorySyncStorage()
+  const signedIn = valtioSync({
+    endpoint: '/api/sync',
+    namespace: 'user_1',
+    schema: { account, todos },
+    storage: createMemorySyncStorage(),
+    localStorage: createMemoryWebStorage(),
+    sessionStorage: createMemoryWebStorage(),
+    fetch: async () => {
+      throw new Error('offline')
+    },
+  })
+  const anonymous = valtioSync({
+    endpoint: '/api/sync',
+    namespace: 'anon_1',
+    schema: { account, todos },
+    storage: sourceStorage,
+    localStorage: createMemoryWebStorage(),
+    sessionStorage: createMemoryWebStorage(),
+  })
+  await Promise.all([anonymous.ready, signedIn.ready])
+  anonymous.collections.todos.create({ id: 'todo_1', title: 'Keep me' })
+
+  await expect(
+    signedIn.adoptLocalData(anonymous, {
+      sync: true,
+      clearSource: 'afterSuccessfulSync',
+    }),
+  ).rejects.toThrow('source local data was not cleared')
+
+  expect(signedIn.status.dirty).toBe(true)
+  expect(anonymous.collections.todos.get('todo_1')).toMatchObject({ title: 'Keep me' })
+  expect(await sourceStorage.listRecords('todos')).toHaveLength(1)
+  signedIn.close()
+})
+
+test('rejects anonymous local data adoption into a non-empty target', async () => {
+  const anonymous = valtioSync({
+    endpoint: '/api/sync',
+    namespace: 'anon_1',
+    schema: { account, todos },
+    storage: createMemorySyncStorage(),
+    localStorage: createMemoryWebStorage(),
+    sessionStorage: createMemoryWebStorage(),
+  })
+  const signedIn = valtioSync({
+    endpoint: '/api/sync',
+    namespace: 'user_1',
+    schema: { account, todos },
+    storage: createMemorySyncStorage({
+      collections: {
+        todos: [makeStoredTodo('todo_existing', { id: 'todo_existing', title: 'Existing' })],
+      },
+    }),
+    localStorage: createMemoryWebStorage(),
+    sessionStorage: createMemoryWebStorage(),
+  })
+  await Promise.all([anonymous.ready, signedIn.ready])
+  anonymous.collections.todos.create({ id: 'todo_1', title: 'Anonymous draft' })
+
+  await expect(signedIn.adoptLocalData(anonymous)).rejects.toThrow('target with cached records')
+  expect(signedIn.collections.todos.get('todo_existing')).toMatchObject({
+    title: 'Existing',
+  })
 })
 
 test('broadcasts local collection changes to another tab', async () => {
