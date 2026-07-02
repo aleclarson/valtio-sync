@@ -39,6 +39,13 @@ export type JsonRecord = Record<string, JsonValue>;
 export type JsonValue = string | number | boolean | null | JsonValue[] | {
   [key: string]: JsonValue;
 };
+export type LocalDataSnapshot = {
+  account: JsonRecord;
+  collections: Record<string, StoredRecord[]>;
+  device: JsonRecord;
+  session: JsonRecord;
+};
+export type LocalMigration = (_: LocalDataSnapshot) => LocalDataSnapshot | Promise<LocalDataSnapshot>;
 export type RejectedSyncOp = {
   mutationId: string;
   collection: string;
@@ -47,6 +54,40 @@ export type RejectedSyncOp = {
   message?: string;
   serverRecord?: JsonRecord;
   serverVersion?: number;
+};
+export type StoredAccount<TData extends JsonRecord = JsonRecord> = {
+  data: TData;
+  meta: {
+    schemaVersion: number;
+    lastServerSeq: number | null;
+  };
+};
+export type StoredRecord<TData extends JsonRecord = JsonRecord> = {
+  id: string;
+  data: TData;
+  meta: {
+    dirty: boolean;
+    deleted: boolean;
+    serverVersion: number | null;
+    baseServerVersion: number | null;
+    updatedAtClient: number;
+    updatedByDevice: string;
+    lastSyncedAt: number | null;
+    lastError?: SyncError;
+  };
+};
+export type SyncedCollection<TRecord extends JsonRecord = JsonRecord> = {
+  readonly name: string;
+  readonly records: Record<string, TRecord>;
+  create(_: Partial<TRecord> & {
+    id?: string;
+  }): TRecord;
+  update(_: string, _: Partial<TRecord>): void;
+  delete(_: string): void;
+  get(_: string): TRecord | undefined;
+  list(): TRecord[];
+  flush(): Promise<void>;
+  sync(): Promise<void>;
 };
 export type SyncError = {
   reason: SyncRejectionReason | 'network' | 'auth';
@@ -66,6 +107,17 @@ export type SyncResponse = {
   rejected: RejectedSyncOp[];
   changes: Record<string, CollectionChanges>;
 };
+export type SyncStorage = {
+  readAccount(): Promise<StoredAccount | null>;
+  writeAccount(_: StoredAccount): Promise<void>;
+  listRecords(_: string): Promise<StoredRecord[]>;
+  readRecord(_: string, _: string): Promise<StoredRecord | null>;
+  writeRecord(_: string, _: StoredRecord): Promise<void>;
+  deleteRecord(_: string, _: string): Promise<void>;
+  clearCollection(_: string): Promise<void>;
+  clearAll(): Promise<void>;
+  close?(): void;
+};
 export type UpdateSyncOp = {
   mutationId: string;
   collection: string;
@@ -75,10 +127,73 @@ export type UpdateSyncOp = {
   touched: string[];
   baseServerVersion: number | null;
 };
+export type ValtioSyncClient<TSchema extends SyncSchema = SyncSchema> = {
+  readonly account: AccountState<TSchema>;
+  readonly collections: CollectionMap<TSchema>;
+  readonly device: JsonRecord;
+  readonly session: JsonRecord;
+  readonly status: ValtioSyncStatus;
+  readonly ready: Promise<void>;
+  flush(): Promise<void>;
+  sync(): Promise<void>;
+  clearLocalData(): Promise<void>;
+  clearCollection(_: SyncedCollection): Promise<void>;
+  reset(): Promise<void>;
+  close(): void;
+  debug: {
+    getStatus(): ValtioSyncStatus;
+    getDirtyRecords(): Array<{
+      collection: string;
+      id: string;
+      record: StoredRecord;
+    }>;
+    getPendingOps(): SyncOp[];
+    getRecordMeta(_: SyncedCollection, _: string): StoredRecord['meta'] | undefined;
+    getLastSyncRequest(): SyncRequest | null;
+    getLastSyncResponse(): SyncResponse | null;
+    clearLocalData(): Promise<void>;
+  };
+};
+export type ValtioSyncClientOptions<TSchema extends SyncSchema, TDevice extends FieldMap | undefined = undefined, TSession extends FieldMap | undefined = undefined> = {
+  endpoint: string;
+  namespace?: string;
+  schema: TSchema;
+  device?: TDevice;
+  session?: TSession;
+  schemaVersion?: number;
+  fetch?: typeof fetch;
+  migrations?: Record<number, LocalMigration>;
+  storage?: SyncStorage;
+  localStorage?: WebStorageLike;
+  sessionStorage?: WebStorageLike;
+  indexedDB?: IDBFactory;
+  broadcast?: boolean;
+};
+export type ValtioSyncStatus = {
+  hydrated: boolean;
+  syncing: boolean;
+  dirty: boolean;
+  online: boolean;
+  lastSyncAt: number | null;
+  lastError: SyncError | null;
+};
+export type WebStorageLike = {
+  getItem(_: string): string | null;
+  setItem(_: string, _: string): void;
+  removeItem(_: string): void;
+};
 // #endregion
 
 // #region Functions
-export declare function valtioSync(): never;
+export declare function createMemorySyncStorage(_?: {
+  account?: StoredAccount;
+  collections?: Record<string, StoredRecord[]>;
+}): SyncStorage;
+export declare function createMemoryWebStorage(): WebStorageLike;
+export declare function valtioSync<const TSchema extends SyncSchema, const TDevice extends FieldMap | undefined = undefined, const TSession extends FieldMap | undefined = undefined>(_: ValtioSyncClientOptions<TSchema, TDevice, TSession>): ValtioSyncClient<TSchema> & {
+  readonly device: LocalState<TDevice>;
+  readonly session: LocalState<TSession>;
+};
 // #endregion
 
 // #region Other
