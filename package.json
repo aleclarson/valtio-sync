@@ -14,8 +14,36 @@
   ],
   "type": "module",
   "exports": {
-    "types": "./dist/index.d.mts",
-    "default": "./dist/index.mjs"
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    },
+    "./client": {
+      "types": "./dist/client.d.mts",
+      "default": "./dist/client.mjs"
+    },
+    "./server": {
+      "types": "./dist/server.d.mts",
+      "default": "./dist/server.mjs"
+    },
+    "./schema": {
+      "types": "./dist/schema.d.mts",
+      "default": "./dist/schema.mjs"
+    },
+    "./drizzle": {
+      "types": "./dist/drizzle.d.mts",
+      "default": "./dist/drizzle.mjs"
+    }
+  },
+  "peerDependencies": {
+    "drizzle-orm": "^0.45.2",
+    "valtio": "^2.3.2",
+    "zod": "^4.4.3"
+  },
+  "peerDependenciesMeta": {
+    "drizzle-orm": {
+      "optional": true
+    }
   },
   "scripts": {
     "dev": "tsdown --sourcemap --watch",
@@ -29,13 +57,16 @@
   },
   "devDependencies": {
     "@types/node": "^26.0.1",
+    "drizzle-orm": "^0.45.2",
     "oxfmt": "^0.56.0",
     "oxlint": "^1.71.0",
     "radashi": "^12.9.1",
     "tsdown": "^0.22.3",
     "tsnapi": "^0.3.3",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.9"
+    "valtio": "^2.3.2",
+    "vitest": "^4.1.9",
+    "zod": "^4.4.3"
   },
   "packageManager": "pnpm@11.5.1"
 }
