@@ -9,9 +9,46 @@ pnpm add drizzle-orm
 Import from the Drizzle entrypoint:
 
 ```ts
-import { applyOpsWithDrizzle } from "valtio-sync/drizzle";
+import { $type, applyOpsWithDrizzle, defineAccount, defineCollection } from "valtio-sync/drizzle";
 import { valtioSync } from "valtio-sync/server";
 ```
+
+## Type-checked schema definitions
+
+The Drizzle entrypoint provides schema definition wrappers that check your Zod
+field map against a Drizzle table's selected row shape:
+
+```ts
+import { $type, defineAccount, defineCollection } from "valtio-sync/drizzle";
+import { z } from "zod";
+import { accountTable, todosTable } from "./db/schema";
+
+export const account = defineAccount({
+  dbType: $type<typeof accountTable>(),
+  fields: {
+    theme: z.enum(["light", "dark"]).default("light"),
+  },
+});
+
+export const todos = defineCollection({
+  dbType: $type<typeof todosTable>(),
+  fields: {
+    id: z.string(),
+    title: z.string().default(""),
+    completed: z.boolean().default(false),
+  },
+});
+```
+
+The `dbType` marker is compile-time only. At runtime the wrappers create the
+same schema definitions as `valtio-sync/schema`.
+
+Field keys must exactly match `typeof table.$inferSelect`, and each Zod output
+type must be assignable to the matching Drizzle selected value type. Narrower
+schemas are allowed, such as a Zod enum for a `string` column. Wider schemas are
+rejected, such as a nullable Zod field for a non-null Drizzle column.
+
+## Mutation handlers
 
 `applyOpsWithDrizzle` wraps mutation handlers in a transaction, runs optional authorization and conflict hooks, writes a sync event row, and returns server handlers for `valtioSync`.
 

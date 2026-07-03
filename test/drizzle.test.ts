@@ -1,7 +1,25 @@
+import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core'
 import { z } from 'zod'
-import { applyOpsWithDrizzle, type DrizzleLikeDatabase } from '../src/drizzle.js'
+import {
+  $type,
+  applyOpsWithDrizzle,
+  defineAccount as defineDrizzleAccount,
+  defineCollection as defineDrizzleCollection,
+  type DrizzleLikeDatabase,
+} from '../src/drizzle.js'
 import { defineAccount, defineCollection } from '../src/schema.js'
 import { valtioSync } from '../src/server.js'
+
+const accountTable = sqliteTable('account', {
+  theme: text('theme', { enum: ['light', 'dark'] }).notNull(),
+})
+
+const todosTable = sqliteTable('todos', {
+  id: text('id').notNull(),
+  title: text('title').notNull(),
+  completed: integer('completed', { mode: 'boolean' }).notNull(),
+  note: text('note'),
+})
 
 const account = defineAccount({
   fields: {
@@ -17,6 +35,56 @@ const todos = defineCollection({
   },
 })
 
+const drizzleAccount = defineDrizzleAccount({
+  dbType: $type<typeof accountTable>(),
+  fields: {
+    theme: z.enum(['light', 'dark']).default('light'),
+  },
+})
+
+const drizzleTodos = defineDrizzleCollection({
+  dbType: $type<typeof todosTable>(),
+  fields: {
+    id: z.string(),
+    title: z.string().default(''),
+    completed: z.boolean().default(false),
+    note: z.string().nullable(),
+  },
+})
+
+defineDrizzleCollection({
+  dbType: $type<typeof todosTable>(),
+  // @ts-expect-error Drizzle-backed fields must include every selected column.
+  fields: {
+    id: z.string(),
+    title: z.string(),
+    completed: z.boolean(),
+  },
+})
+
+defineDrizzleCollection({
+  dbType: $type<typeof todosTable>(),
+  fields: {
+    id: z.string(),
+    title: z.string(),
+    completed: z.boolean(),
+    note: z.string().nullable(),
+    // @ts-expect-error Drizzle-backed fields cannot include columns outside the selected row.
+    archived: z.boolean(),
+  },
+})
+
+defineDrizzleCollection({
+  dbType: $type<typeof todosTable>(),
+  fields: {
+    id: z.string(),
+    title: z.string(),
+    // @ts-expect-error Nullable output is not compatible with a non-null Drizzle column.
+    completed: z.boolean().nullable(),
+    note: z.string().nullable(),
+  },
+})
+
 function syncRequest(body: unknown) {
   return new Request('https://app.test/api/sync', {
     method: 'POST',
@@ -26,6 +94,24 @@ function syncRequest(body: unknown) {
     },
   })
 }
+
+test('drizzle schema wrappers create normal schema definitions', () => {
+  expect(drizzleAccount.kind).toBe('account')
+  expect(drizzleTodos.kind).toBe('collection')
+  expect(
+    drizzleTodos.schema.parse({
+      id: 'todo_1',
+      title: 'Local',
+      completed: false,
+      note: null,
+    }),
+  ).toEqual({
+    id: 'todo_1',
+    title: 'Local',
+    completed: false,
+    note: null,
+  })
+})
 
 test('drizzle helper wraps mutations in a transaction and writes sync events', async () => {
   const inserted: Array<{ table: unknown; row: Record<string, unknown> }> = []

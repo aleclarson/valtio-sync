@@ -22,6 +22,10 @@ export type DrizzleCreateInput<TContext, TTransaction extends DrizzleLikeTransac
 }>, TTransaction> & {
   record: JsonRecord;
 };
+export type DrizzleDefinitionOptions<TTable extends DrizzleSelectable, TFields extends FieldMap> = {
+  readonly dbType: DrizzleType<TTable>;
+  readonly fields: DrizzleCompatibleFields<TTable['$inferSelect'], TFields>;
+};
 export type DrizzleDeleteInput<TContext, TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction> = DrizzleMutationInput<TContext, Extract<SyncOp, {
   type: 'delete';
 }>, TTransaction>;
@@ -39,6 +43,9 @@ export type DrizzleMutationInput<TContext, TOp extends SyncOp, TTransaction exte
 };
 export type DrizzleMutationResult = Omit<ServerMutationResult, 'serverVersion'> & {
   serverVersion?: number;
+};
+export type DrizzleSelectable = {
+  readonly $inferSelect: Record<string, unknown>;
 };
 export type DrizzleSyncAuthorizeInput<TContext> = {
   ctx: TContext;
@@ -64,6 +71,9 @@ export type DrizzleSyncEventInput<TContext, TTransaction extends DrizzleLikeTran
   seq: number;
 };
 export type DrizzleSyncEventWriteInput<TContext, TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction> = Omit<DrizzleSyncEventInput<TContext, TTransaction>, 'seq'>;
+export type DrizzleType<TTable extends DrizzleSelectable> = {
+  readonly [drizzleTypeMarker]: TTable;
+};
 export type DrizzleUpdateInput<TContext, TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction> = DrizzleMutationInput<TContext, Extract<SyncOp, {
   type: 'update';
 }>, TTransaction> & {
@@ -72,5 +82,8 @@ export type DrizzleUpdateInput<TContext, TTransaction extends DrizzleLikeTransac
 // #endregion
 
 // #region Functions
+export declare function $type<TTable extends DrizzleSelectable>(): DrizzleType<TTable>;
 export declare function applyOpsWithDrizzle<TContext, TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction>(_: ApplyOpsWithDrizzleOptions<TContext, TTransaction>): ServerHandlers<TContext>;
+export declare function defineAccount<TTable extends DrizzleSelectable, const TFields extends FieldMap>(_: DrizzleDefinitionOptions<TTable, TFields>): AccountDefinition<TFields>;
+export declare function defineCollection<TTable extends DrizzleSelectable, const TFields extends FieldMap>(_: DrizzleDefinitionOptions<TTable, TFields>): CollectionDefinition<TFields>;
 // #endregion

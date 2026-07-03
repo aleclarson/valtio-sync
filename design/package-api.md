@@ -24,7 +24,7 @@ export const account = defineAccount({
   },
 });
 
-export const todos = defineCollection<typeof schema.todos>({
+export const todos = defineCollection({
   fields: {
     id: z.string(),
     title: z.string().default(""),
@@ -126,7 +126,31 @@ const vs = valtioSync({
 Collection definition example:
 
 ```ts
-export const todos = defineCollection<typeof schema.todos>({
+export const todos = defineCollection({
+  fields: {
+    id: z.string(),
+    title: z.string().default(""),
+    completed: z.boolean().default(false),
+  },
+});
+```
+
+The optional Drizzle entry point should provide equivalent wrappers that accept
+a compile-time database type marker:
+
+```ts
+import { $type, defineAccount, defineCollection } from "valtio-sync/drizzle";
+import { accountTable, todosTable } from "./db/schema";
+
+export const account = defineAccount({
+  dbType: $type<typeof accountTable>(),
+  fields: {
+    theme: z.enum(["light", "dark"]).default("light"),
+  },
+});
+
+export const todos = defineCollection({
+  dbType: $type<typeof todosTable>(),
   fields: {
     id: z.string(),
     title: z.string().default(""),

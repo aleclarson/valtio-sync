@@ -1,4 +1,15 @@
 import type { JsonRecord, SyncOp } from './protocol.js'
+import {
+  defineAccount as defineSchemaAccount,
+  defineCollection as defineSchemaCollection,
+} from './schema.js'
+import type {
+  AccountDefinition,
+  CollectionDefinition,
+  FieldMap,
+  FieldSchema,
+  InferFields,
+} from './schema.js'
 import type {
   AccountServerHandlers,
   CollectionServerHandlers,
@@ -6,6 +17,52 @@ import type {
   ServerHandlers,
   ServerMutationResult,
 } from './server.js'
+
+declare const drizzleTypeMarker: unique symbol
+
+export type DrizzleSelectable = {
+  readonly $inferSelect: Record<string, unknown>
+}
+
+export type DrizzleType<TTable extends DrizzleSelectable> = {
+  readonly [drizzleTypeMarker]: TTable
+}
+
+export type DrizzleDefinitionOptions<TTable extends DrizzleSelectable, TFields extends FieldMap> = {
+  readonly dbType: DrizzleType<TTable>
+  readonly fields: DrizzleCompatibleFields<TTable['$inferSelect'], TFields>
+}
+
+type DrizzleCompatibleFields<
+  TRow extends Record<string, unknown>,
+  TFields extends FieldMap,
+> = TFields & {
+  [K in Exclude<keyof TFields, keyof TRow>]: never
+} & {
+  [K in Exclude<keyof TRow, keyof TFields>]-?: FieldSchema
+} & {
+  [K in keyof TFields & keyof TRow]: InferFields<TFields>[K] extends TRow[K] ? TFields[K] : never
+}
+
+export function $type<TTable extends DrizzleSelectable>(): DrizzleType<TTable> {
+  return {} as DrizzleType<TTable>
+}
+
+export function defineAccount<TTable extends DrizzleSelectable, const TFields extends FieldMap>(
+  options: DrizzleDefinitionOptions<TTable, TFields>,
+): AccountDefinition<TFields> {
+  return defineSchemaAccount({
+    fields: options.fields,
+  })
+}
+
+export function defineCollection<TTable extends DrizzleSelectable, const TFields extends FieldMap>(
+  options: DrizzleDefinitionOptions<TTable, TFields>,
+): CollectionDefinition<TFields> {
+  return defineSchemaCollection({
+    fields: options.fields,
+  })
+}
 
 export type DrizzleLikeTransaction = {
   insert(table: unknown): {
