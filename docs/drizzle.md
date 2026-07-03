@@ -91,9 +91,85 @@ The helper expects a Drizzle-like `db` with `transaction` and an `insert(table).
 
 Read operations are passed through unchanged. Keep `readChanges` and `readSnapshot` responsible for shaping `CollectionChanges` from your sync event table or application tables.
 
-Treat the sync event table as a retained change feed, not as the application's
-permanent audit log. Keep rows small, track active client cursors if you need
-precise cleanup, and prune events older than the retained floor. If a client
-asks for changes from before that floor, return `mode: "snapshot"` with a full
-authoritative collection snapshot so clean local rows missing from the server
-are removed safely.
+## Sync event retention
+
+The Drizzle helper writes events, but it does not own your retention policy.
+Your application should treat `sync_events` as a retained change feed, not as a
+permanent audit log. A typical table is intentionally small:
+
+```txt
+sync_events
+  user_id or account_id
+  seq
+  collection
+  record_id
+  op
+  created_at
+```
+
+Index it for the way `readChanges` reads:
+
+```txt
+(user_id, seq)
+```
+
+or, for account-scoped apps:
+
+```txt
+(account_id, seq)
+```
+
+For upserts, the event can point to the current application row. For deletes,
+the event itself is the tombstone until it is pruned.
+
+The simplest cleanup strategy is a retained floor per user or account:
+
+```txt
+sync_retention
+  user_id or account_id
+  pruned_through_seq
+```
+
+When a cleanup job deletes events through sequence `100`, update
+`pruned_through_seq` to `100` in the same job. If a client later asks for
+changes from before that floor, return an authoritative snapshot:
+
+```ts
+readChanges: async ({ ctx, since }) => {
+  const floor = await readRetainedFloorSeq(ctx.user.id);
+
+  if (since !== null && since < floor) {
+    return {
+      serverSeq: await readLatestSeq(ctx.user.id),
+      changes: {
+        mode: "snapshot",
+        upserted: (await readAllTodos(ctx.user.id)).map((row) => ({
+          id: row.id,
+          serverVersion: row.version,
+          record: row,
+        })),
+        deleted: [],
+      },
+    };
+  }
+
+  return readTodoChanges(ctx.user.id, since);
+};
+```
+
+For more precise cleanup, track active clients:
+
+```txt
+sync_clients
+  user_id or account_id
+  client_id
+  last_server_seq
+  last_seen_at
+```
+
+On each authenticated sync request, update `last_server_seq` from the client's
+incoming `lastServerSeq`. Do not advance it to the `serverSeq` you are about to
+return, because the response might fail before the client stores it. A cleanup
+job can prune events at or below the minimum `last_server_seq` across active
+clients. Treat clients older than your supported offline window as inactive and
+let snapshot fallback repair their clean local cache if they return.

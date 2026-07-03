@@ -93,16 +93,55 @@ snapshot is authoritative for that collection: the client applies the listed
 records, applies explicit deletes, then removes clean local records that are
 missing from the snapshot. Dirty or rejected local records are preserved.
 
+## Sync event retention
+
+`valtio-sync` provides the protocol semantics for incremental changes and
+authoritative snapshots. The application owns the server database schema,
+retention window, cleanup jobs, and any per-client cursor tracking.
+
+Treat a sync event table as a retained change feed, not as a permanent audit
+log. Keep rows small:
+
+```txt
+sync_events
+  account_id or user_id
+  seq
+  collection
+  record_id
+  op
+  created_at
+```
+
+For upserts, `readChanges` can read the current application row by `record_id`.
+For deletes, keep the delete event until it is past the retained floor, or fall
+back to an authoritative snapshot for stale clients.
+
+The simple retention model is:
+
+```txt
+keep events for 30-90 days, or keep the latest N events per account
+record the oldest cursor that can still be answered from retained events
+return mode: "snapshot" when since is older than that retained floor
+```
+
 When `readChanges` uses a retained event table, return an authoritative snapshot
-if the client's `since` cursor is older than the retained floor:
+if the client's `since` cursor is older than the retained floor. In
+`readChanges`, `mode` belongs inside `changes`:
 
 ```ts
 readChanges: async ({ ctx, since }) => {
   if (since !== null && since < await readRetainedFloorSeq(ctx.user.id)) {
     return {
-      mode: "snapshot",
       serverSeq: await readLatestSeq(ctx.user.id),
-      changes: await readFullTodoSnapshot(ctx.user.id),
+      changes: {
+        mode: "snapshot",
+        upserted: (await readAllTodos(ctx.user.id)).map((row) => ({
+          id: row.id,
+          serverVersion: row.version,
+          record: row,
+        })),
+        deleted: [],
+      },
     };
   }
 
@@ -112,6 +151,26 @@ readChanges: async ({ ctx, since }) => {
   };
 };
 ```
+
+For tighter cleanup, track active clients:
+
+```txt
+sync_clients
+  account_id or user_id
+  client_id
+  last_server_seq
+  last_seen_at
+```
+
+Update `sync_clients.last_server_seq` from the client's incoming
+`lastServerSeq`, not from the new `serverSeq` being returned. The response might
+not reach the client, so the next request is the first proof that the client
+durably observed that cursor.
+
+A cleanup job can delete events at or below the minimum `last_server_seq` for
+active clients. Ignore clients whose `last_seen_at` is older than the offline
+window your application supports, then rely on snapshot fallback if they return
+later.
 
 Reject an operation with an app-defined reason:
 
