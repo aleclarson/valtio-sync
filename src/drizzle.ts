@@ -1,15 +1,5 @@
 import type { JsonRecord, SyncOp } from './protocol.js'
-import {
-  defineAccount as defineSchemaAccount,
-  defineCollection as defineSchemaCollection,
-} from './schema.js'
-import type {
-  AccountDefinition,
-  CollectionDefinition,
-  FieldMap,
-  FieldSchema,
-  InferFields,
-} from './schema.js'
+import * as schema from './schema.js'
 import type {
   AccountServerHandlers,
   CollectionServerHandlers,
@@ -28,38 +18,49 @@ export type DrizzleType<TTable extends DrizzleSelectable> = {
   readonly [drizzleTypeMarker]: TTable
 }
 
-export type DrizzleDefinitionOptions<TTable extends DrizzleSelectable, TFields extends FieldMap> = {
+export type DrizzleDefinitionOptions<
+  TTable extends DrizzleSelectable,
+  TFields extends schema.FieldMap,
+> = {
   readonly dbType: DrizzleType<TTable>
   readonly fields: DrizzleCompatibleFields<TTable['$inferSelect'], TFields>
 }
 
 type DrizzleCompatibleFields<
   TRow extends Record<string, unknown>,
-  TFields extends FieldMap,
+  TFields extends schema.FieldMap,
 > = TFields & {
   [K in Exclude<keyof TFields, keyof TRow>]: never
 } & {
-  [K in Exclude<keyof TRow, keyof TFields>]-?: FieldSchema
+  [K in Exclude<keyof TRow, keyof TFields>]-?: schema.FieldSchema
 } & {
-  [K in keyof TFields & keyof TRow]: InferFields<TFields>[K] extends TRow[K] ? TFields[K] : never
+  [K in keyof TFields & keyof TRow]: schema.InferFields<TFields>[K] extends TRow[K]
+    ? TFields[K]
+    : never
 }
 
 export function $type<TTable extends DrizzleSelectable>(): DrizzleType<TTable> {
   return {} as DrizzleType<TTable>
 }
 
-export function defineAccount<TTable extends DrizzleSelectable, const TFields extends FieldMap>(
+export function defineAccount<
+  TTable extends DrizzleSelectable,
+  const TFields extends schema.FieldMap,
+>(
   options: DrizzleDefinitionOptions<TTable, TFields>,
-): AccountDefinition<TFields> {
-  return defineSchemaAccount({
+): schema.AccountDefinition<TFields> {
+  return schema.defineAccount({
     fields: options.fields,
   })
 }
 
-export function defineCollection<TTable extends DrizzleSelectable, const TFields extends FieldMap>(
+export function defineCollection<
+  TTable extends DrizzleSelectable,
+  const TFields extends schema.FieldMap,
+>(
   options: DrizzleDefinitionOptions<TTable, TFields>,
-): CollectionDefinition<TFields> {
-  return defineSchemaCollection({
+): schema.CollectionDefinition<TFields> {
+  return schema.defineCollection({
     fields: options.fields,
   })
 }
