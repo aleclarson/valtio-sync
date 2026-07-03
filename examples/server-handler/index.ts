@@ -38,17 +38,23 @@ type SyncEvent =
       type: 'delete'
     }
 
+// The rows map stands in for application tables. The event list stands in for a
+// sync_events table that can answer "what changed since this cursor?"
 const rows = new Map<string, TodoRow>()
 const events: SyncEvent[] = []
 let serverSeq = 0
 
 const POST = createValtioSyncHandler({
   schema: { account, todos },
+  // Put authentication, tenant lookup, and request-scoped dependencies here.
+  // Handlers should trust ctx, not client-supplied collection data.
   getContext: async (request): Promise<UserContext> => ({
     userId: request.headers.get('x-user-id') ?? 'demo-user',
   }),
   handlers: {
     todos: {
+      // readChanges returns only durable server changes newer than the client's
+      // last cursor. This is the shape to prefer over snapshots at scale.
       readChanges: async ({ ctx, since }) => {
         const visibleEvents = events.filter(
           (event) => event.userId === ctx.userId && event.seq > (since ?? 0),
@@ -74,6 +80,8 @@ const POST = createValtioSyncHandler({
         }
       },
       create: async ({ ctx, record }) => {
+        // The server owns canonicalization and uniqueness. Production code
+        // should also make creates idempotent with the handler's mutation id.
         const todo = record as Todo
         const key = todoKey(ctx.userId, todo.id)
         if (rows.has(key)) {
@@ -97,6 +105,8 @@ const POST = createValtioSyncHandler({
         if (!row) {
           rejectSync('not_found', 'Todo not found')
         }
+        // Rejecting stale base versions keeps conflict policy explicit and
+        // lets the client retain its optimistic local value for inspection.
         if (op.baseServerVersion !== null && op.baseServerVersion !== row.serverVersion) {
           rejectSync('conflict', 'Base version is stale', {
             serverVersion: row.serverVersion,
@@ -139,6 +149,8 @@ const POST = createValtioSyncHandler({
   },
 })
 
+// Server handlers are ordinary Request -> Response functions, so they are easy
+// to test without a framework adapter.
 const response = await POST(
   new Request('https://app.example/api/sync', {
     method: 'POST',

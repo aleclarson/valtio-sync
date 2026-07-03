@@ -31,6 +31,8 @@ describe('todo sync', () => {
       await sync.ready
 
       sync.collections.todos.create({ id: 'todo_1', title: 'Draft' })
+      // Flush makes batched local writes deterministic before reading debug
+      // state. It is usually the right boundary for unit tests.
       await sync.flush()
 
       expect(sync.debug.getPendingOps()).toMatchObject([
@@ -61,6 +63,8 @@ describe('todo sync', () => {
       await sync.sync()
 
       sync.collections.todos.records.todo_1.title = 'Changed'
+      // Direct proxy writes are batched for normal app usage. With fake timers,
+      // advance the batch window before flushing.
       await vi.advanceTimersByTimeAsync(100)
       await sync.flush()
 
@@ -84,6 +88,8 @@ describe('todo sync', () => {
 function makeTestSync() {
   let serverVersion = 0
 
+  // Memory-backed storage keeps tests isolated from IndexedDB, localStorage,
+  // sessionStorage, and cross-test namespace reuse.
   return valtioSync({
     endpoint: '/api/sync',
     namespace: `test:${++namespaceId}`,
@@ -94,6 +100,8 @@ function makeTestSync() {
     fetch: async (_input, init) => {
       const request = JSON.parse(String(init?.body)) as SyncRequest
 
+      // Echo accepted operations with matching mutation ids. Real tests can
+      // replace this with app-specific canonicalization or rejection cases.
       return Response.json({
         serverSeq: serverVersion + request.ops.length,
         accepted: request.ops.map((op) => ({

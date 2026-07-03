@@ -23,6 +23,8 @@ const todos = defineCollection({
 
 type Todo = InferSync<typeof todos>
 
+// The example keeps the server in memory so the sync contract is visible without
+// database setup. A real app would scope these rows by the authenticated user.
 const serverTodos = new Map<string, { record: Todo; serverVersion: number }>()
 let serverSeq = 0
 
@@ -30,6 +32,8 @@ const POST = createValtioSyncHandler({
   schema: { account, todos },
   handlers: {
     todos: {
+      // Snapshot reads are the smallest useful server shape. Use readChanges
+      // instead when you already have a durable event log or sequence cursor.
       readSnapshot: async () => ({
         serverSeq,
         changes: {
@@ -42,6 +46,8 @@ const POST = createValtioSyncHandler({
         },
       }),
       create: async ({ record }) => {
+        // Handlers receive schema-validated JSON. Returning a record lets the
+        // server canonicalize local optimistic state after the mutation lands.
         const normalized = normalizeTodo(record as Todo)
         const serverVersion = ++serverSeq
         serverTodos.set(normalized.id, { record: normalized, serverVersion })
@@ -80,6 +86,8 @@ const sync = createValtioSyncClient({
   storage: createMemorySyncStorage(),
   localStorage: createMemoryWebStorage(),
   sessionStorage: createMemoryWebStorage(),
+  // This bridge keeps the example single-file. Browser apps usually let fetch
+  // hit their real /api/sync route instead.
   fetch: (_input, init) => {
     return POST(
       new Request('https://app.example/api/sync', {
@@ -93,6 +101,8 @@ const sync = createValtioSyncClient({
 
 await sync.ready
 
+// Application code mutates Valtio state normally. The client persists the write
+// locally, marks it dirty, and sends it on the next sync.
 const todo = sync.collections.todos.create({
   id: 'todo_1',
   title: ' Ship the first example ',
