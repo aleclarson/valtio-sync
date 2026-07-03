@@ -128,3 +128,82 @@ test('drizzle helper wraps mutations in a transaction and writes sync events', a
     },
   ])
 })
+
+test('drizzle helper supports sync events that return a generated sequence', async () => {
+  const inserted: Array<{ table: unknown; row: Record<string, unknown> }> = []
+  const syncEventsTable = Symbol('sync_events')
+  const db: DrizzleLikeDatabase = {
+    transaction: async (callback) => callback(db),
+    insert: (table) => ({
+      values: (row) => {
+        inserted.push({ table, row })
+        return [{ seq: 99 }]
+      },
+    }),
+  }
+  const handlers = applyOpsWithDrizzle({
+    db,
+    syncEvents: {
+      write: async ({ tx, collection, recordId, op }) => {
+        const [event] = (await tx.insert(syncEventsTable).values({
+          userId: 'user_1',
+          collection,
+          recordId,
+          op,
+        })) as Array<{ seq: number }>
+        return event.seq
+      },
+    },
+    handlers: {
+      todos: {
+        create: ({ record }) => ({
+          record,
+        }),
+      },
+    },
+  })
+  const POST = valtioSync({
+    schema: { account, todos },
+    handlers,
+  })
+
+  const response = await POST(
+    syncRequest({
+      clientId: 'device_1',
+      schemaVersion: 1,
+      lastServerSeq: null,
+      ops: [
+        {
+          mutationId: 'm1',
+          collection: 'todos',
+          type: 'create',
+          id: 'todo_1',
+          value: {
+            id: 'todo_1',
+            title: 'Local',
+          },
+          touched: ['id', 'title'],
+        },
+      ],
+    }),
+  )
+  const body = await response.json()
+
+  expect(inserted).toEqual([
+    {
+      table: syncEventsTable,
+      row: {
+        userId: 'user_1',
+        collection: 'todos',
+        recordId: 'todo_1',
+        op: 'create',
+      },
+    },
+  ])
+  expect(body.accepted).toMatchObject([
+    {
+      mutationId: 'm1',
+      serverVersion: 99,
+    },
+  ])
+})

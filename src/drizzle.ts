@@ -7,15 +7,23 @@ import type {
   ServerMutationResult,
 } from './server.js'
 
-export type DrizzleLikeDatabase = {
-  transaction?<T>(callback: (tx: DrizzleLikeDatabase) => Promise<T>): Promise<T>
+export type DrizzleLikeTransaction = {
   insert(table: unknown): {
     values(row: Record<string, unknown>): Promise<unknown> | unknown
   }
 }
 
-export type DrizzleSyncEventInput<TContext> = {
-  tx: DrizzleLikeDatabase
+export type DrizzleLikeDatabase<
+  TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
+> = DrizzleLikeTransaction & {
+  transaction?<T>(callback: (tx: TTransaction) => T | Promise<T>): Promise<T>
+}
+
+export type DrizzleSyncEventInput<
+  TContext,
+  TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
+> = {
+  tx: TTransaction
   ctx: TContext
   collection: string
   recordId: string
@@ -23,62 +31,77 @@ export type DrizzleSyncEventInput<TContext> = {
   seq: number
 }
 
-export type DrizzleSyncEventConfig<TContext> = {
-  table: unknown
-  nextSeq(input: Omit<DrizzleSyncEventInput<TContext>, 'seq'>): number | Promise<number>
-  toRow(input: DrizzleSyncEventInput<TContext>): Record<string, unknown>
+export type DrizzleSyncEventWriteInput<
+  TContext,
+  TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
+> = Omit<DrizzleSyncEventInput<TContext, TTransaction>, 'seq'>
+
+export type DrizzleSyncEventConfig<
+  TContext,
+  TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
+> =
+  | {
+      write(input: DrizzleSyncEventWriteInput<TContext, TTransaction>): number | Promise<number>
+    }
+  | {
+      table: unknown
+      nextSeq(input: DrizzleSyncEventWriteInput<TContext, TTransaction>): number | Promise<number>
+      toRow(input: DrizzleSyncEventInput<TContext, TTransaction>): Record<string, unknown>
+    }
+
+export type DrizzleMutationInput<
+  TContext,
+  TOp extends SyncOp,
+  TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
+> = ServerHandlerContext<TContext> & {
+  tx: TTransaction
+  op: TOp
 }
 
-export type DrizzleMutationInput<TContext, TOp extends SyncOp> =
-  ServerHandlerContext<TContext> & {
-    tx: DrizzleLikeDatabase
-    op: TOp
-  }
-
-export type DrizzleCreateInput<TContext> = DrizzleMutationInput<TContext, Extract<
-  SyncOp,
-  { type: 'create' }
->> & {
+export type DrizzleCreateInput<
+  TContext,
+  TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
+> = DrizzleMutationInput<TContext, Extract<SyncOp, { type: 'create' }>, TTransaction> & {
   record: JsonRecord
 }
 
-export type DrizzleUpdateInput<TContext> = DrizzleMutationInput<TContext, Extract<
-  SyncOp,
-  { type: 'update' }
->> & {
+export type DrizzleUpdateInput<
+  TContext,
+  TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
+> = DrizzleMutationInput<TContext, Extract<SyncOp, { type: 'update' }>, TTransaction> & {
   patch: JsonRecord
 }
 
-export type DrizzleDeleteInput<TContext> = DrizzleMutationInput<TContext, Extract<
-  SyncOp,
-  { type: 'delete' }
->>
+export type DrizzleDeleteInput<
+  TContext,
+  TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
+> = DrizzleMutationInput<TContext, Extract<SyncOp, { type: 'delete' }>, TTransaction>
 
 export type DrizzleMutationResult = Omit<ServerMutationResult, 'serverVersion'> & {
   serverVersion?: number
 }
 
-export type DrizzleAccountHandlers<TContext> = Omit<
-  AccountServerHandlers<TContext>,
-  'update'
-> & {
+export type DrizzleAccountHandlers<
+  TContext,
+  TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
+> = Omit<AccountServerHandlers<TContext>, 'update'> & {
   update?: (
-    input: DrizzleUpdateInput<TContext>,
+    input: DrizzleUpdateInput<TContext, TTransaction>,
   ) => DrizzleMutationResult | Promise<DrizzleMutationResult>
 }
 
-export type DrizzleCollectionHandlers<TContext> = Omit<
-  CollectionServerHandlers<TContext>,
-  'create' | 'update' | 'delete'
-> & {
+export type DrizzleCollectionHandlers<
+  TContext,
+  TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
+> = Omit<CollectionServerHandlers<TContext>, 'create' | 'update' | 'delete'> & {
   create?: (
-    input: DrizzleCreateInput<TContext>,
+    input: DrizzleCreateInput<TContext, TTransaction>,
   ) => DrizzleMutationResult | Promise<DrizzleMutationResult>
   update?: (
-    input: DrizzleUpdateInput<TContext>,
+    input: DrizzleUpdateInput<TContext, TTransaction>,
   ) => DrizzleMutationResult | Promise<DrizzleMutationResult>
   delete?: (
-    input: DrizzleDeleteInput<TContext>,
+    input: DrizzleDeleteInput<TContext, TTransaction>,
   ) => DrizzleMutationResult | Promise<DrizzleMutationResult>
 }
 
@@ -88,24 +111,32 @@ export type DrizzleSyncAuthorizeInput<TContext> = {
   op: SyncOp
 }
 
-export type DrizzleSyncConflictInput<TContext> = DrizzleSyncAuthorizeInput<TContext> & {
-  tx: DrizzleLikeDatabase
+export type DrizzleSyncConflictInput<
+  TContext,
+  TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
+> = DrizzleSyncAuthorizeInput<TContext> & {
+  tx: TTransaction
 }
 
-export type ApplyOpsWithDrizzleOptions<TContext> = {
-  db: DrizzleLikeDatabase
-  syncEvents: DrizzleSyncEventConfig<TContext>
+export type ApplyOpsWithDrizzleOptions<
+  TContext,
+  TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
+> = {
+  db: DrizzleLikeDatabase<TTransaction>
+  syncEvents: DrizzleSyncEventConfig<TContext, TTransaction>
   handlers: Record<
     string,
-    DrizzleAccountHandlers<TContext> | DrizzleCollectionHandlers<TContext>
+    | DrizzleAccountHandlers<TContext, TTransaction>
+    | DrizzleCollectionHandlers<TContext, TTransaction>
   >
   authorize?: (input: DrizzleSyncAuthorizeInput<TContext>) => void | Promise<void>
-  checkConflict?: (input: DrizzleSyncConflictInput<TContext>) => void | Promise<void>
+  checkConflict?: (input: DrizzleSyncConflictInput<TContext, TTransaction>) => void | Promise<void>
 }
 
-export function applyOpsWithDrizzle<TContext>(
-  options: ApplyOpsWithDrizzleOptions<TContext>,
-): ServerHandlers<TContext> {
+export function applyOpsWithDrizzle<
+  TContext,
+  TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
+>(options: ApplyOpsWithDrizzleOptions<TContext, TTransaction>): ServerHandlers<TContext> {
   const handlers: ServerHandlers<TContext> = {}
 
   for (const [collection, handler] of Object.entries(options.handlers)) {
@@ -147,12 +178,15 @@ export function applyOpsWithDrizzle<TContext>(
   return handlers
 }
 
-async function runMutation<TContext>(
-  options: ApplyOpsWithDrizzleOptions<TContext>,
+async function runMutation<
+  TContext,
+  TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
+>(
+  options: ApplyOpsWithDrizzleOptions<TContext, TTransaction>,
   collection: string,
   op: SyncOp,
   ctx: TContext,
-  mutate: (tx: DrizzleLikeDatabase) => DrizzleMutationResult | Promise<DrizzleMutationResult>,
+  mutate: (tx: TTransaction) => DrizzleMutationResult | Promise<DrizzleMutationResult>,
 ): Promise<ServerMutationResult> {
   return runTransaction(options.db, async (tx) => {
     await options.authorize?.({
@@ -168,23 +202,13 @@ async function runMutation<TContext>(
     })
 
     const result = await mutate(tx)
-    const seq = await options.syncEvents.nextSeq({
+    const seq = await writeSyncEvent(options, {
       tx,
       ctx,
       collection,
       recordId: op.id,
       op: op.type,
     })
-    await tx.insert(options.syncEvents.table).values(
-      options.syncEvents.toRow({
-        tx,
-        ctx,
-        collection,
-        recordId: op.id,
-        op: op.type,
-        seq,
-      }),
-    )
 
     return {
       ...result,
@@ -193,13 +217,34 @@ async function runMutation<TContext>(
   })
 }
 
-async function runTransaction<T>(
-  db: DrizzleLikeDatabase,
-  callback: (tx: DrizzleLikeDatabase) => Promise<T>,
-): Promise<T> {
+async function writeSyncEvent<
+  TContext,
+  TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
+>(
+  options: ApplyOpsWithDrizzleOptions<TContext, TTransaction>,
+  input: DrizzleSyncEventWriteInput<TContext, TTransaction>,
+): Promise<number> {
+  if ('write' in options.syncEvents) {
+    return options.syncEvents.write(input)
+  }
+
+  const seq = await options.syncEvents.nextSeq(input)
+  await input.tx.insert(options.syncEvents.table).values(
+    options.syncEvents.toRow({
+      ...input,
+      seq,
+    }),
+  )
+  return seq
+}
+
+async function runTransaction<
+  T,
+  TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
+>(db: DrizzleLikeDatabase<TTransaction>, callback: (tx: TTransaction) => Promise<T>): Promise<T> {
   if (db.transaction) {
     return db.transaction(callback)
   }
 
-  return callback(db)
+  return callback(db as TTransaction)
 }

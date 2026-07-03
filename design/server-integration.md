@@ -172,15 +172,19 @@ Potential Drizzle helper concept:
 applyOpsWithDrizzle({
   db,
   syncEvents: {
-    table: syncEvents,
-    nextSeq: async ({ tx, ctx }) => ...,
-    toRow: ({ ctx, collection, recordId, op, seq }) => ({
-      userId: ctx.user.id,
-      seq,
-      collection,
-      recordId,
-      op,
-    }),
+    write: async ({ tx, ctx, collection, recordId, op }) => {
+      const [event] = await tx
+        .insert(syncEvents)
+        .values({
+          userId: ctx.user.id,
+          collection,
+          recordId,
+          op,
+        })
+        .returning({ seq: syncEvents.seq });
+
+      return event.seq;
+    },
   },
   handlers,
   authorize: async ({ ctx, collection, op }) => ...,
@@ -193,7 +197,7 @@ Recommended helper table:
 ```txt
 sync_events
   user_id
-  seq
+  seq auto-generated primary key/identity
   collection
   record_id
   op
