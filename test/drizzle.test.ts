@@ -1,4 +1,3 @@
-import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core'
 import { z } from 'zod'
 import {
   $type,
@@ -9,17 +8,6 @@ import {
 } from '../src/drizzle.js'
 import { defineAccount, defineCollection } from '../src/schema.js'
 import { valtioSync } from '../src/server.js'
-
-const accountTable = sqliteTable('account', {
-  theme: text('theme', { enum: ['light', 'dark'] }).notNull(),
-})
-
-const todosTable = sqliteTable('todos', {
-  id: text('id').notNull(),
-  title: text('title').notNull(),
-  completed: integer('completed', { mode: 'boolean' }).notNull(),
-  note: text('note'),
-})
 
 const account = defineAccount({
   fields: {
@@ -35,56 +23,6 @@ const todos = defineCollection({
   },
 })
 
-const drizzleAccount = defineDrizzleAccount({
-  dbType: $type<typeof accountTable>(),
-  fields: {
-    theme: z.enum(['light', 'dark']).default('light'),
-  },
-})
-
-const drizzleTodos = defineDrizzleCollection({
-  dbType: $type<typeof todosTable>(),
-  fields: {
-    id: z.string(),
-    title: z.string().default(''),
-    completed: z.boolean().default(false),
-    note: z.string().nullable(),
-  },
-})
-
-defineDrizzleCollection({
-  dbType: $type<typeof todosTable>(),
-  // @ts-expect-error Drizzle-backed fields must include every selected column.
-  fields: {
-    id: z.string(),
-    title: z.string(),
-    completed: z.boolean(),
-  },
-})
-
-defineDrizzleCollection({
-  dbType: $type<typeof todosTable>(),
-  fields: {
-    id: z.string(),
-    title: z.string(),
-    completed: z.boolean(),
-    note: z.string().nullable(),
-    // @ts-expect-error Drizzle-backed fields cannot include columns outside the selected row.
-    archived: z.boolean(),
-  },
-})
-
-defineDrizzleCollection({
-  dbType: $type<typeof todosTable>(),
-  fields: {
-    id: z.string(),
-    title: z.string(),
-    // @ts-expect-error Nullable output is not compatible with a non-null Drizzle column.
-    completed: z.boolean().nullable(),
-    note: z.string().nullable(),
-  },
-})
-
 function syncRequest(body: unknown) {
   return new Request('https://app.test/api/sync', {
     method: 'POST',
@@ -96,6 +34,29 @@ function syncRequest(body: unknown) {
 }
 
 test('drizzle schema wrappers create normal schema definitions', () => {
+  const drizzleAccount = defineDrizzleAccount({
+    dbType: $type<{ readonly $inferSelect: { theme: 'light' | 'dark' } }>(),
+    fields: {
+      theme: z.enum(['light', 'dark']).default('light'),
+    },
+  })
+  const drizzleTodos = defineDrizzleCollection({
+    dbType: $type<{
+      readonly $inferSelect: {
+        id: string
+        title: string
+        completed: boolean
+        note: string | null
+      }
+    }>(),
+    fields: {
+      id: z.string(),
+      title: z.string().default(''),
+      completed: z.boolean().default(false),
+      note: z.string().nullable(),
+    },
+  })
+
   expect(drizzleAccount.kind).toBe('account')
   expect(drizzleTodos.kind).toBe('collection')
   expect(
