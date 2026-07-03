@@ -254,6 +254,55 @@ test('remote changes apply to clean records', async () => {
   expect(vs.status.dirty).toBe(false)
 })
 
+test('snapshot changes remove absent clean records and preserve dirty records', async () => {
+  const storage = createMemorySyncStorage({
+    collections: {
+      todos: [makeStoredTodo('todo_stale', 'Stale'), makeStoredTodo('todo_dirty', 'Base')],
+    },
+  })
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage,
+    fetch: async () =>
+      jsonResponse({
+        serverSeq: 5,
+        accepted: [],
+        rejected: [],
+        changes: {
+          todos: {
+            mode: 'snapshot',
+            upserted: [
+              {
+                id: 'todo_remote',
+                serverVersion: 5,
+                record: {
+                  id: 'todo_remote',
+                  title: 'Remote',
+                  completed: true,
+                },
+              },
+            ],
+            deleted: [],
+          },
+        },
+      }),
+  })
+  await vs.ready
+
+  vs.collections.todos.update('todo_dirty', { title: 'Local' })
+  await vs.sync()
+
+  expect(vs.collections.todos.get('todo_stale')).toBeUndefined()
+  expect(vs.collections.todos.get('todo_remote')).toMatchObject({
+    title: 'Remote',
+    completed: true,
+  })
+  expect(vs.collections.todos.get('todo_dirty')).toMatchObject({ title: 'Local' })
+  expect(await storage.readRecord('todos', 'todo_stale')).toBeNull()
+  expect(vs.status.dirty).toBe(true)
+})
+
 test('remote changes conflict with dirty records under rejectStale', async () => {
   const storage = createMemorySyncStorage({
     collections: {

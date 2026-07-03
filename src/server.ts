@@ -25,6 +25,7 @@ import {
 export type {
   AcceptedSyncOp,
   CollectionChanges,
+  CollectionChangesMode,
   CreateSyncOp,
   DeleteSyncOp,
   JsonRecord,
@@ -357,10 +358,17 @@ async function readCollectionChanges<TContext>(
   }
 
   if (handler.readSnapshot) {
-    return handler.readSnapshot({
+    const result = await handler.readSnapshot({
       request,
       ctx,
     })
+    return {
+      ...result,
+      changes: {
+        ...result.changes,
+        mode: result.changes.mode ?? 'snapshot',
+      },
+    }
   }
 
   return null
@@ -377,6 +385,7 @@ function validateChanges(
   }
 
   return {
+    mode: changes.mode,
     upserted: changes.upserted.map((change) => ({
       ...change,
       record: parseRecord(definition, change.record) as JsonRecord,
@@ -394,6 +403,10 @@ function mergeChanges(
   }
 
   return {
+    mode:
+      existing.mode === 'snapshot' || next.mode === 'snapshot'
+        ? 'snapshot'
+        : existing.mode ?? next.mode,
     upserted: [...existing.upserted, ...next.upserted],
     deleted: [...existing.deleted, ...next.deleted],
   }

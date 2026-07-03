@@ -90,3 +90,10 @@ syncEvents: {
 The helper expects a Drizzle-like `db` with `transaction` and an `insert(table).values(row)` shape for the compatibility path. If `transaction` is unavailable, the callback runs directly against `db`.
 
 Read operations are passed through unchanged. Keep `readChanges` and `readSnapshot` responsible for shaping `CollectionChanges` from your sync event table or application tables.
+
+Treat the sync event table as a retained change feed, not as the application's
+permanent audit log. Keep rows small, track active client cursors if you need
+precise cleanup, and prune events older than the retained floor. If a client
+asks for changes from before that floor, return `mode: "snapshot"` with a full
+authoritative collection snapshot so clean local rows missing from the server
+are removed safely.

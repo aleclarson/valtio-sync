@@ -76,7 +76,10 @@ export type RejectedSyncOp = {
   serverVersion?: number
 }
 
+export type CollectionChangesMode = 'changes' | 'snapshot'
+
 export type CollectionChanges = {
+  mode?: CollectionChangesMode
   upserted: Array<{
     id: string
     serverVersion: number
@@ -153,7 +156,10 @@ export const syncRequestSchema: z.ZodType<SyncRequest> = z.object({
   ops: z.array(syncOpSchema),
 })
 
+const collectionChangesModeSchema = z.enum(['changes', 'snapshot'])
+
 export const collectionChangesSchema: z.ZodType<CollectionChanges> = z.object({
+  mode: collectionChangesModeSchema.optional(),
   upserted: z.array(
     z.object({
       id: z.string().min(1),

@@ -1,6 +1,7 @@
 export type {
   AcceptedSyncOp,
   CollectionChanges,
+  CollectionChangesMode,
   CreateSyncOp,
   DeleteSyncOp,
   JsonRecord,

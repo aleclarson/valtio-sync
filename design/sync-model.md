@@ -56,7 +56,10 @@ primary: readChanges
 fallback: readSnapshot
 ```
 
-The client can tolerate either normalized response.
+The client can tolerate either normalized response. Incremental changes are the
+default. Snapshot changes are authoritative for clean local collection records,
+which lets servers prune old event rows and fall back to a full snapshot when a
+client's cursor is older than the retained event floor.
 
 ## Conflict Policy
 
@@ -289,6 +292,7 @@ type SyncResponse = {
   changes: Record<
     string,
     {
+      mode?: "changes" | "snapshot";
       upserted: Array<{
         id: string;
         serverVersion: number;

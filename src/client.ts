@@ -37,6 +37,7 @@ import {
 export type {
   AcceptedSyncOp,
   CollectionChanges,
+  CollectionChangesMode,
   CreateSyncOp,
   DeleteSyncOp,
   JsonRecord,
@@ -614,11 +615,17 @@ export function valtioSync<
     }
 
     for (const [collection, changes] of Object.entries(response.changes)) {
+      const snapshotIds = changes.mode === 'snapshot' ? new Set<string>() : null
       for (const change of changes.upserted) {
+        snapshotIds?.add(change.id)
         await applyRemoteUpsert(collection, change.id, change.record, change.serverVersion)
       }
       for (const change of changes.deleted) {
+        snapshotIds?.add(change.id)
         await applyRemoteDelete(collection, change.id, change.serverVersion)
+      }
+      if (snapshotIds) {
+        await pruneSnapshotRecords(collection, snapshotIds)
       }
     }
   }
@@ -844,6 +851,44 @@ export function valtioSync<
     })
     recordMeta.set(key, storedRecords.get(key)!.meta)
     await storage.deleteRecord(collection, id)
+  }
+
+  async function pruneSnapshotRecords(collection: string, snapshotIds: Set<string>) {
+    if (collection === ACCOUNT_COLLECTION) {
+      return
+    }
+
+    const collectionState = collections[collection]
+    if (!collectionState) {
+      return
+    }
+
+    const localIds = new Set(Object.keys(collectionState.records))
+    for (const [key, record] of storedRecords) {
+      if (key.startsWith(`${collection}:`)) {
+        localIds.add(record.id)
+      }
+    }
+
+    for (const id of localIds) {
+      if (snapshotIds.has(id)) {
+        continue
+      }
+
+      const key = metaKey(collection, id)
+      const existing = storedRecords.get(key)
+      // Snapshot absence is authoritative only for server-clean records.
+      if (existing?.meta.dirty || existing?.meta.lastError) {
+        continue
+      }
+
+      runWithoutTracking(() => {
+        delete collectionState.records[id]
+      })
+      storedRecords.delete(key)
+      recordMeta.delete(key)
+      await storage.deleteRecord(collection, id)
+    }
   }
 
   function mutateCollection(collection: string, mutation: CollectionMutation) {

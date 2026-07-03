@@ -253,4 +253,5 @@ test('server handler supports app-defined rejection and snapshot fallback', asyn
       serverVersion: 7,
     },
   ])
+  expect(body.changes.todos.mode).toBe('snapshot')
 })

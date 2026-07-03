@@ -24,6 +24,7 @@ export type AdoptLocalDataOptions = {
   clearSource?: 'never' | 'afterSuccessfulSync';
 };
 export type CollectionChanges = {
+  mode?: CollectionChangesMode;
   upserted: Array<{
     id: string;
     serverVersion: number;
@@ -34,6 +35,7 @@ export type CollectionChanges = {
     serverVersion: number;
   }>;
 };
+export type CollectionChangesMode = 'changes' | 'snapshot';
 export type CollectionDefinition<TFields extends FieldMap = FieldMap> = {
   readonly kind: 'collection';
   readonly fields: TFields;

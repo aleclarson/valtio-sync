@@ -69,6 +69,9 @@ readChanges: async ({ ctx, since }) => ({
 });
 ```
 
+Omit `mode` for normal incremental results. Incremental changes upsert and delete only
+the listed records, leaving other local records alone.
+
 Use `readSnapshot` when the server can only return a full snapshot:
 
 ```ts
@@ -83,6 +86,31 @@ readSnapshot: async ({ ctx }) => ({
     deleted: [],
   },
 });
+```
+
+`readSnapshot` results are marked as `mode: "snapshot"` by the server handler. A
+snapshot is authoritative for that collection: the client applies the listed
+records, applies explicit deletes, then removes clean local records that are
+missing from the snapshot. Dirty or rejected local records are preserved.
+
+When `readChanges` uses a retained event table, return an authoritative snapshot
+if the client's `since` cursor is older than the retained floor:
+
+```ts
+readChanges: async ({ ctx, since }) => {
+  if (since !== null && since < await readRetainedFloorSeq(ctx.user.id)) {
+    return {
+      mode: "snapshot",
+      serverSeq: await readLatestSeq(ctx.user.id),
+      changes: await readFullTodoSnapshot(ctx.user.id),
+    };
+  }
+
+  return {
+    serverSeq: await readLatestSeq(ctx.user.id),
+    changes: await readTodoChanges(ctx.user.id, since),
+  };
+};
 ```
 
 Reject an operation with an app-defined reason:
