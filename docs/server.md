@@ -6,10 +6,10 @@ Import the server entrypoint:
 import { rejectSync, valtioSync } from "valtio-sync/server";
 ```
 
-Create a POST handler with the same schema used by the client:
+Create a server with the same schema used by the client and export its handle method:
 
 ```ts
-export const POST = valtioSync({
+const syncServer = valtioSync({
   schema: { account, todos },
   getContext: async (request) => ({
     user: await requireUser(request),
@@ -38,6 +38,8 @@ export const POST = valtioSync({
     },
   },
 });
+
+export const POST = syncServer.handle;
 ```
 
 `getContext` runs once per request. Put authentication, tenant lookup, and request-scoped dependencies there. Handlers receive `{ request, ctx }` plus operation-specific data.

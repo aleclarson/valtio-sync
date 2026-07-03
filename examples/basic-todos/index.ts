@@ -3,7 +3,7 @@ import {
   createMemoryWebStorage,
   valtioSync as createValtioSyncClient,
 } from 'valtio-sync/client'
-import { rejectSync, valtioSync as createValtioSyncHandler } from 'valtio-sync/server'
+import { rejectSync, valtioSync as createValtioSyncServer } from 'valtio-sync/server'
 import { defineAccount, defineCollection, type infer as InferSync } from 'valtio-sync/schema'
 import { z } from 'zod'
 
@@ -28,7 +28,7 @@ type Todo = InferSync<typeof todos>
 const serverTodos = new Map<string, { record: Todo; serverVersion: number }>()
 let serverSeq = 0
 
-const POST = createValtioSyncHandler({
+const syncServer = createValtioSyncServer({
   schema: { account, todos },
   handlers: {
     todos: {
@@ -89,7 +89,7 @@ const sync = createValtioSyncClient({
   // This bridge keeps the example single-file. Browser apps usually let fetch
   // hit their real /api/sync route instead.
   fetch: (_input, init) => {
-    return POST(
+    return syncServer.handle(
       new Request('https://app.example/api/sync', {
         method: 'POST',
         body: init?.body,

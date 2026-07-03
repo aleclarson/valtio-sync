@@ -114,6 +114,10 @@ export type ValtioSyncServerOptions<TSchema extends SyncSchema, TContext> = {
   getContext?: (request: Request) => TContext | Promise<TContext>
 }
 
+export type ValtioSyncServer = {
+  handle(request: Request): Promise<Response>
+}
+
 export class SyncRejection extends Error {
   reason: SyncRejectionReason
   serverRecord?: JsonRecord
@@ -148,78 +152,80 @@ export function rejectSync(
 export function valtioSync<
   const TSchema extends SyncSchema,
   TContext = undefined,
->(options: ValtioSyncServerOptions<TSchema, TContext>) {
+>(options: ValtioSyncServerOptions<TSchema, TContext>): ValtioSyncServer {
   const accountKey = String(getAccountKey(options.schema))
   const collectionKeys = getCollectionKeys(options.schema) as string[]
 
-  return async function handleValtioSync(request: Request): Promise<Response> {
-    if (request.method && request.method !== 'POST') {
-      return jsonResponse({ error: 'Method not allowed' }, 405)
-    }
-
-    let syncRequest: SyncRequest
-    try {
-      syncRequest = parseSyncRequest(await request.json())
-    } catch (error) {
-      return jsonResponse(
-        {
-          error: error instanceof Error ? error.message : 'Invalid sync request',
-        },
-        400,
-      )
-    }
-
-    const ctx = options.getContext
-      ? await options.getContext(request)
-      : (undefined as TContext)
-    const accepted: SyncResponse['accepted'] = []
-    const rejected: RejectedSyncOp[] = []
-    const changes: SyncResponse['changes'] = {}
-    let serverSeq = syncRequest.lastServerSeq ?? 0
-
-    for (const op of syncRequest.ops) {
-      const result = await applyOp(options, accountKey, request, ctx, op)
-      if ('rejected' in result) {
-        rejected.push(result.rejected)
-      } else {
-        accepted.push(result.accepted)
-        serverSeq = Math.max(serverSeq, result.accepted.serverVersion)
-      }
-    }
-
-    for (const collection of [accountKey, ...collectionKeys]) {
-      const responseCollection =
-        collection === accountKey ? ACCOUNT_COLLECTION : collection
-      const handler = options.handlers[collection]
-      if (!handler) {
-        continue
+  return {
+    async handle(request: Request): Promise<Response> {
+      if (request.method && request.method !== 'POST') {
+        return jsonResponse({ error: 'Method not allowed' }, 405)
       }
 
-      const readResult = await readCollectionChanges(
-        handler,
-        request,
-        ctx,
-        syncRequest.lastServerSeq,
-      )
-      if (!readResult) {
-        continue
+      let syncRequest: SyncRequest
+      try {
+        syncRequest = parseSyncRequest(await request.json())
+      } catch (error) {
+        return jsonResponse(
+          {
+            error: error instanceof Error ? error.message : 'Invalid sync request',
+          },
+          400,
+        )
       }
 
-      changes[responseCollection] = mergeChanges(
-        changes[responseCollection],
-        validateChanges(options.schema, responseCollection, readResult.changes),
-      )
-      serverSeq = Math.max(serverSeq, readResult.serverSeq ?? serverSeq)
-    }
+      const ctx = options.getContext
+        ? await options.getContext(request)
+        : (undefined as TContext)
+      const accepted: SyncResponse['accepted'] = []
+      const rejected: RejectedSyncOp[] = []
+      const changes: SyncResponse['changes'] = {}
+      let serverSeq = syncRequest.lastServerSeq ?? 0
 
-    const response: SyncResponse = {
-      serverSeq,
-      accepted,
-      rejected,
-      changes,
-    }
-    parseSyncResponse(response)
-    return jsonResponse(response)
+      for (const op of syncRequest.ops) {
+        const result = await applyOp(options, accountKey, request, ctx, op)
+        if ('rejected' in result) {
+          rejected.push(result.rejected)
+        } else {
+          accepted.push(result.accepted)
+          serverSeq = Math.max(serverSeq, result.accepted.serverVersion)
+        }
+      }
+
+      for (const collection of [accountKey, ...collectionKeys]) {
+        const responseCollection =
+          collection === accountKey ? ACCOUNT_COLLECTION : collection
+        const handler = options.handlers[collection]
+        if (!handler) {
+          continue
+        }
+
+        const readResult = await readCollectionChanges(
+          handler,
+          request,
+          ctx,
+          syncRequest.lastServerSeq,
+        )
+        if (!readResult) {
+          continue
+        }
+
+        changes[responseCollection] = mergeChanges(
+          changes[responseCollection],
+          validateChanges(options.schema, responseCollection, readResult.changes),
+        )
+        serverSeq = Math.max(serverSeq, readResult.serverSeq ?? serverSeq)
+      }
+
+      const response: SyncResponse = {
+        serverSeq,
+        accepted,
+        rejected,
+        changes,
+      }
+      parseSyncResponse(response)
+      return jsonResponse(response)
+    },
   }
 }
 

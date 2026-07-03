@@ -28,7 +28,7 @@ function syncRequest(body: unknown) {
 
 test('server handler validates ops and returns accepted mutations with changes', async () => {
   const calls: string[] = []
-  const POST = valtioSync({
+  const syncServer = valtioSync({
     schema: { account, todos },
     getContext: async () => ({ userId: 'user_1' }),
     handlers: {
@@ -83,8 +83,10 @@ test('server handler validates ops and returns accepted mutations with changes',
       },
     },
   })
+  expect(typeof syncServer).toBe('object')
+  expect(syncServer.handle).toEqual(expect.any(Function))
 
-  const response = await POST(
+  const response = await syncServer.handle(
     syncRequest({
       clientId: 'device_1',
       schemaVersion: 1,
@@ -151,7 +153,7 @@ test('server handler validates ops and returns accepted mutations with changes',
 
 test('server handler rejects invalid ops without calling app handlers', async () => {
   const create = vi.fn()
-  const POST = valtioSync({
+  const syncServer = valtioSync({
     schema: { account, todos },
     handlers: {
       todos: {
@@ -160,7 +162,7 @@ test('server handler rejects invalid ops without calling app handlers', async ()
     },
   })
 
-  const response = await POST(
+  const response = await syncServer.handle(
     syncRequest({
       clientId: 'device_1',
       schemaVersion: 1,
@@ -193,7 +195,7 @@ test('server handler rejects invalid ops without calling app handlers', async ()
 })
 
 test('server handler supports app-defined rejection and snapshot fallback', async () => {
-  const POST = valtioSync({
+  const syncServer = valtioSync({
     schema: { account, todos },
     handlers: {
       todos: {
@@ -219,7 +221,7 @@ test('server handler supports app-defined rejection and snapshot fallback', asyn
     },
   })
 
-  const response = await POST(
+  const response = await syncServer.handle(
     syncRequest({
       clientId: 'device_1',
       schemaVersion: 1,

@@ -58,11 +58,13 @@ const handlers = applyOpsWithDrizzle({
   },
 });
 
-export const POST = valtioSync({
+const syncServer = valtioSync({
   schema: { account, todos },
   getContext: async (request) => ({ user: await requireUser(request) }),
   handlers,
 });
+
+export const POST = syncServer.handle;
 ```
 
 If a mutation handler omits `serverVersion`, the helper uses the sequence returned by `syncEvents.write`. Return a specific `serverVersion` only when your table already has a better per-record version.

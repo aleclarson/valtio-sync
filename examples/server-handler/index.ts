@@ -1,4 +1,4 @@
-import { rejectSync, valtioSync as createValtioSyncHandler } from 'valtio-sync/server'
+import { rejectSync, valtioSync as createValtioSyncServer } from 'valtio-sync/server'
 import { defineAccount, defineCollection, type infer as InferSync } from 'valtio-sync/schema'
 import { z } from 'zod'
 
@@ -44,7 +44,7 @@ const rows = new Map<string, TodoRow>()
 const events: SyncEvent[] = []
 let serverSeq = 0
 
-const POST = createValtioSyncHandler({
+const syncServer = createValtioSyncServer({
   schema: { account, todos },
   // Put authentication, tenant lookup, and request-scoped dependencies here.
   // Handlers should trust ctx, not client-supplied collection data.
@@ -149,9 +149,9 @@ const POST = createValtioSyncHandler({
   },
 })
 
-// Server handlers are ordinary Request -> Response functions, so they are easy
-// to test without a framework adapter.
-const response = await POST(
+// The server handle method is an ordinary Request -> Response function, so it
+// is easy to test without a framework adapter.
+const response = await syncServer.handle(
   new Request('https://app.example/api/sync', {
     method: 'POST',
     headers: {

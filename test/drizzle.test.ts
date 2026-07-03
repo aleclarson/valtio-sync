@@ -70,12 +70,12 @@ test('drizzle helper wraps mutations in a transaction and writes sync events', a
       },
     },
   })
-  const POST = valtioSync({
+  const syncServer = valtioSync({
     schema: { account, todos },
     handlers,
   })
 
-  const response = await POST(
+  const response = await syncServer.handle(
     syncRequest({
       clientId: 'device_1',
       schemaVersion: 1,
@@ -162,12 +162,12 @@ test('drizzle helper supports sync events that return a generated sequence', asy
       },
     },
   })
-  const POST = valtioSync({
+  const syncServer = valtioSync({
     schema: { account, todos },
     handlers,
   })
 
-  const response = await POST(
+  const response = await syncServer.handle(
     syncRequest({
       clientId: 'device_1',
       schemaVersion: 1,

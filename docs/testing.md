@@ -55,12 +55,12 @@ await vi.advanceTimersByTimeAsync(100);
 await sync.flush();
 ```
 
-Test server handlers by calling the returned function with a `Request`:
+Test server handlers by calling the returned server's handle method with a `Request`:
 
 ```ts
 import { valtioSync } from "valtio-sync/server";
 
-const POST = valtioSync({
+const syncServer = valtioSync({
   schema: { account, todos },
   handlers: {
     todos: {
@@ -69,7 +69,7 @@ const POST = valtioSync({
   },
 });
 
-const response = await POST(
+const response = await syncServer.handle(
   new Request("https://app.test/api/sync", {
     method: "POST",
     body: JSON.stringify({

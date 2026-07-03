@@ -132,12 +132,12 @@ Server entry point:
 import { valtioSync } from "valtio-sync/server";
 ```
 
-The server factory returns a fetch-compatible handler.
+The server factory returns an object with a fetch-compatible `handle` method.
 
 Example conceptual shape:
 
 ```ts
-export const POST = valtioSync({
+const syncServer = valtioSync({
   schema: {
     account,
     todos,
@@ -164,6 +164,8 @@ export const POST = valtioSync({
     user: await requireUser(request),
   }),
 });
+
+export const POST = syncServer.handle;
 ```
 
 Potential Drizzle helper concept:

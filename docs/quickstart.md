@@ -69,7 +69,7 @@ Expose a server endpoint:
 import { valtioSync } from "valtio-sync/server";
 import { account, todos } from "./schema";
 
-export const POST = valtioSync({
+const syncServer = valtioSync({
   schema: { account, todos },
   getContext: async (request) => ({
     user: await requireUser(request),
@@ -98,6 +98,8 @@ export const POST = valtioSync({
     },
   },
 });
+
+export const POST = syncServer.handle;
 ```
 
 Each mutation handler returns a `serverVersion` and may return a canonical `record` when the server normalizes the value.

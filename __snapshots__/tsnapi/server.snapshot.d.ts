@@ -128,6 +128,9 @@ export type UpdateSyncOp = {
   touched: string[];
   baseServerVersion: number | null;
 };
+export type ValtioSyncServer = {
+  handle(_: Request): Promise<Response>;
+};
 export type ValtioSyncServerOptions<TSchema extends SyncSchema, TContext> = {
   schema: TSchema;
   handlers: ServerHandlers<TContext>;
@@ -154,7 +157,7 @@ export declare function rejectSync(_: SyncRejectionReason, _?: string, _?: {
   serverRecord?: JsonRecord;
   serverVersion?: number;
 }): never;
-export declare function valtioSync<const TSchema extends SyncSchema, TContext = undefined>(_: ValtioSyncServerOptions<TSchema, TContext>): (_: Request) => Promise<Response>;
+export declare function valtioSync<const TSchema extends SyncSchema, TContext = undefined>(_: ValtioSyncServerOptions<TSchema, TContext>): ValtioSyncServer;
 // #endregion
 
 // #region Other
