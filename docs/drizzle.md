@@ -3,7 +3,7 @@
 Install Drizzle when you want the optional helper:
 
 ```sh
-pnpm add drizzle-orm
+pnpm add drizzle-orm@rc
 ```
 
 Import from the Drizzle entrypoint:
