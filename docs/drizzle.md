@@ -126,7 +126,11 @@ syncEvents: {
 
 The helper expects a Drizzle-like `db` with `transaction` and an `insert(table).values(row)` shape for the compatibility path. If `transaction` is unavailable, the callback runs directly against `db`.
 
-Read operations are passed through unchanged. Keep `readChanges` and `readSnapshot` responsible for shaping `CollectionChanges` from your sync event table or application tables.
+Read operations are passed through unchanged. Keep `readChanges` and
+`readSnapshot` responsible for shaping `CollectionChanges` from your sync event
+table or application tables. If you provide `readChanges`, handle `since: null`
+as the bootstrap read for a new device; return `changes.mode: "snapshot"` when
+the retained event feed cannot reconstruct complete collection state.
 
 ## Sync event retention
 

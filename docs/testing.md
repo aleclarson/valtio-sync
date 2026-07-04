@@ -64,6 +64,13 @@ const syncServer = valtioSync({
   schema: { account, todos },
   handlers: {
     todos: {
+      readSnapshot: () => ({
+        serverSeq: 1,
+        changes: {
+          upserted: [],
+          deleted: [],
+        },
+      }),
       create: ({ record }) => ({ serverVersion: 1, record }),
     },
   },

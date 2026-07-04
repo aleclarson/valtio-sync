@@ -72,6 +72,13 @@ readChanges: async ({ ctx, since }) => ({
 Omit `mode` for normal incremental results. Incremental changes upsert and delete only
 the listed records, leaving other local records alone.
 
+First sync for a new device sends `since: null`. If a collection defines
+`readChanges`, that handler must treat `since: null` as a bootstrap read and
+return enough data to initialize the collection for the authenticated user. When
+the change feed cannot reconstruct complete state for a cursorless client,
+return an authoritative snapshot from `readChanges` by setting
+`changes.mode: "snapshot"`.
+
 Use `readSnapshot` when the server can only return a full snapshot:
 
 ```ts
@@ -92,6 +99,9 @@ readSnapshot: async ({ ctx }) => ({
 snapshot is authoritative for that collection: the client applies the listed
 records, applies explicit deletes, then removes clean local records that are
 missing from the snapshot. Dirty or rejected local records are preserved.
+If both `readChanges` and `readSnapshot` are defined for a collection,
+`readChanges` is used; `readSnapshot` is not an automatic fallback for
+`since: null`.
 
 ## Sync event retention
 
@@ -125,12 +135,12 @@ return mode: "snapshot" when since is older than that retained floor
 ```
 
 When `readChanges` uses a retained event table, return an authoritative snapshot
-if the client's `since` cursor is older than the retained floor. In
-`readChanges`, `mode` belongs inside `changes`:
+if the client has no cursor or if its `since` cursor is older than the retained
+floor. In `readChanges`, `mode` belongs inside `changes`:
 
 ```ts
 readChanges: async ({ ctx, since }) => {
-  if (since !== null && since < await readRetainedFloorSeq(ctx.user.id)) {
+  if (since === null || since < await readRetainedFloorSeq(ctx.user.id)) {
     return {
       serverSeq: await readLatestSeq(ctx.user.id),
       changes: {

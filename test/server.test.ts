@@ -194,6 +194,64 @@ test('server handler rejects invalid ops without calling app handlers', async ()
   ])
 })
 
+test('server handler lets readChanges bootstrap a new device with a snapshot', async () => {
+  const readSnapshot = vi.fn()
+  const readChanges = vi.fn(({ since }) => ({
+    serverSeq: 8,
+    changes: {
+      mode: 'snapshot' as const,
+      upserted: [
+        {
+          id: 'todo_existing',
+          serverVersion: 8,
+          record: {
+            id: 'todo_existing',
+            title: 'Existing',
+            completed: false,
+          },
+        },
+      ],
+      deleted: [],
+    },
+  }))
+  const syncServer = valtioSync({
+    schema: { account, todos },
+    handlers: {
+      todos: {
+        readChanges,
+        readSnapshot,
+      },
+    },
+  })
+
+  const response = await syncServer.handle(
+    syncRequest({
+      clientId: 'device_2',
+      schemaVersion: 1,
+      lastServerSeq: null,
+      ops: [],
+    }),
+  )
+  const body = await response.json()
+
+  expect(readChanges).toHaveBeenCalledWith(
+    expect.objectContaining({
+      since: null,
+    }),
+  )
+  expect(readSnapshot).not.toHaveBeenCalled()
+  expect(body.serverSeq).toBe(8)
+  expect(body.changes.todos).toMatchObject({
+    mode: 'snapshot',
+    upserted: [
+      {
+        id: 'todo_existing',
+        serverVersion: 8,
+      },
+    ],
+  })
+})
+
 test('server handler supports app-defined rejection and snapshot fallback', async () => {
   const syncServer = valtioSync({
     schema: { account, todos },
