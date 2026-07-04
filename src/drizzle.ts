@@ -10,14 +10,17 @@ import type {
 
 declare const drizzleTypeMarker: unique symbol
 
+/** Minimal Drizzle table shape used to read a table's selected row type. */
 export type DrizzleSelectable = {
   readonly $inferSelect: Record<string, unknown>
 }
 
+/** Compile-time marker tying a valtio-sync definition to a Drizzle table type. */
 export type DrizzleType<TTable extends DrizzleSelectable> = {
   readonly [drizzleTypeMarker]: TTable
 }
 
+/** Options for defining a schema entry whose fields must match a Drizzle row type. */
 export type DrizzleDefinitionOptions<
   TTable extends DrizzleSelectable,
   TFields extends schema.FieldMap,
@@ -39,10 +42,12 @@ type DrizzleCompatibleFields<
     : never
 }
 
+/** Capture a Drizzle table type for compile-time field compatibility checks. */
 export function $type<TTable extends DrizzleSelectable>(): DrizzleType<TTable> {
   return {} as DrizzleType<TTable>
 }
 
+/** Define a singleton account state whose fields are checked against a Drizzle table row. */
 export function defineAccount<
   TTable extends DrizzleSelectable,
   const TFields extends schema.FieldMap,
@@ -54,6 +59,7 @@ export function defineAccount<
   })
 }
 
+/** Define a collection whose fields are checked against a Drizzle table row. */
 export function defineCollection<
   TTable extends DrizzleSelectable,
   const TFields extends schema.FieldMap,
@@ -65,18 +71,21 @@ export function defineCollection<
   })
 }
 
+/** Minimal transaction interface required by the Drizzle adapter. */
 export type DrizzleLikeTransaction = {
   insert(table: unknown): {
     values(row: Record<string, unknown>): Promise<unknown> | unknown
   }
 }
 
+/** Minimal database interface required by the Drizzle adapter. */
 export type DrizzleLikeDatabase<
   TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
 > = DrizzleLikeTransaction & {
   transaction?<T>(callback: (tx: TTransaction) => T | Promise<T>): Promise<T>
 }
 
+/** Input passed when the adapter records a sync event with an assigned sequence. */
 export type DrizzleSyncEventInput<
   TContext,
   TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
@@ -89,11 +98,13 @@ export type DrizzleSyncEventInput<
   seq: number
 }
 
+/** Input passed before a sync event sequence has been assigned. */
 export type DrizzleSyncEventWriteInput<
   TContext,
   TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
 > = Omit<DrizzleSyncEventInput<TContext, TTransaction>, 'seq'>
 
+/** Configuration for writing sync events used by readChanges implementations. */
 export type DrizzleSyncEventConfig<
   TContext,
   TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
@@ -107,6 +118,7 @@ export type DrizzleSyncEventConfig<
       toRow(input: DrizzleSyncEventInput<TContext, TTransaction>): Record<string, unknown>
     }
 
+/** Shared mutation input passed to Drizzle-backed handlers. */
 export type DrizzleMutationInput<
   TContext,
   TOp extends SyncOp,
@@ -116,6 +128,7 @@ export type DrizzleMutationInput<
   op: TOp
 }
 
+/** Input passed to Drizzle-backed create handlers. */
 export type DrizzleCreateInput<
   TContext,
   TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
@@ -123,6 +136,7 @@ export type DrizzleCreateInput<
   record: JsonRecord
 }
 
+/** Input passed to Drizzle-backed update handlers. */
 export type DrizzleUpdateInput<
   TContext,
   TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
@@ -130,15 +144,18 @@ export type DrizzleUpdateInput<
   patch: JsonRecord
 }
 
+/** Input passed to Drizzle-backed delete handlers. */
 export type DrizzleDeleteInput<
   TContext,
   TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
 > = DrizzleMutationInput<TContext, Extract<SyncOp, { type: 'delete' }>, TTransaction>
 
+/** Mutation result for Drizzle handlers; serverVersion defaults to the written event sequence. */
 export type DrizzleMutationResult = Omit<ServerMutationResult, 'serverVersion'> & {
   serverVersion?: number
 }
 
+/** Account handlers that receive a Drizzle transaction for mutations. */
 export type DrizzleAccountHandlers<
   TContext,
   TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
@@ -148,6 +165,7 @@ export type DrizzleAccountHandlers<
   ) => DrizzleMutationResult | Promise<DrizzleMutationResult>
 }
 
+/** Collection handlers that receive a Drizzle transaction for mutations. */
 export type DrizzleCollectionHandlers<
   TContext,
   TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
@@ -163,12 +181,14 @@ export type DrizzleCollectionHandlers<
   ) => DrizzleMutationResult | Promise<DrizzleMutationResult>
 }
 
+/** Input passed to the optional Drizzle authorization hook. */
 export type DrizzleSyncAuthorizeInput<TContext> = {
   ctx: TContext
   collection: string
   op: SyncOp
 }
 
+/** Input passed to the optional Drizzle conflict hook inside the mutation transaction. */
 export type DrizzleSyncConflictInput<
   TContext,
   TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
@@ -176,6 +196,7 @@ export type DrizzleSyncConflictInput<
   tx: TTransaction
 }
 
+/** Options for converting Drizzle-backed handlers into server handlers. */
 export type ApplyOpsWithDrizzleOptions<
   TContext,
   TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,
@@ -191,6 +212,7 @@ export type ApplyOpsWithDrizzleOptions<
   checkConflict?: (input: DrizzleSyncConflictInput<TContext, TTransaction>) => void | Promise<void>
 }
 
+/** Wrap Drizzle-backed mutation handlers with transactions and sync event sequencing. */
 export function applyOpsWithDrizzle<
   TContext,
   TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction,

@@ -61,6 +61,7 @@ export type {
 export type { StoredAccount, StoredRecord, SyncStorage, WebStorageLike } from './storage.js'
 export { createMemorySyncStorage, createMemoryWebStorage } from './storage.js'
 
+/** Serializable snapshot of all client-owned local data. */
 export type LocalDataSnapshot = {
   account: JsonRecord
   collections: Record<string, StoredRecord[]>
@@ -68,10 +69,12 @@ export type LocalDataSnapshot = {
   session: JsonRecord
 }
 
+/** Migration function used to upgrade persisted local data between schema versions. */
 export type LocalMigration = (
   state: LocalDataSnapshot,
 ) => LocalDataSnapshot | Promise<LocalDataSnapshot>
 
+/** Options for importing unsynced local data from another valtio-sync client. */
 export type AdoptLocalDataOptions = {
   mode?: 'newAccount'
   copyLocalState?:
@@ -84,6 +87,7 @@ export type AdoptLocalDataOptions = {
   clearSource?: 'never' | 'afterSuccessfulSync'
 }
 
+/** Reactive client status flags and the latest sync error. */
 export type ValtioSyncStatus = {
   hydrated: boolean
   syncing: boolean
@@ -93,6 +97,7 @@ export type ValtioSyncStatus = {
   lastError: SyncError | null
 }
 
+/** Reactive collection facade for reading and mutating synced records. */
 export type SyncedCollection<TRecord extends JsonRecord = JsonRecord> = {
   readonly name: string
   readonly records: Record<string, TRecord>
@@ -122,6 +127,7 @@ type LocalState<TFields extends FieldMap | undefined> = TFields extends FieldMap
   ? InferFields<TFields> & JsonRecord
   : JsonRecord
 
+/** Client returned by the browser/client entrypoint. */
 export type ValtioSyncClient<TSchema extends SyncSchema = SyncSchema> = {
   readonly account: AccountState<TSchema>
   readonly collections: CollectionMap<TSchema>
@@ -147,6 +153,7 @@ export type ValtioSyncClient<TSchema extends SyncSchema = SyncSchema> = {
   }
 }
 
+/** Options for creating a valtio-sync client. */
 export type ValtioSyncClientOptions<
   TSchema extends SyncSchema,
   TDevice extends FieldMap | undefined = undefined,
@@ -210,6 +217,7 @@ type CollectionMutation =
 
 unstable_enableOp()
 
+/** Create a reactive sync client backed by local persistence and a server endpoint. */
 export function valtioSync<
   const TSchema extends SyncSchema,
   const TDevice extends FieldMap | undefined = undefined,

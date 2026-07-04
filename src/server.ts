@@ -48,21 +48,25 @@ export type {
   infer,
 } from './schema.js'
 
+/** Result returned by a mutation handler after applying a client operation. */
 export type ServerMutationResult = {
   serverVersion: number
   record?: JsonRecord
 }
 
+/** Result returned by server-side change readers. */
 export type ServerChangesResult = {
   serverSeq?: number
   changes: CollectionChanges
 }
 
+/** Request and user context passed to every server handler. */
 export type ServerHandlerContext<TContext> = {
   request: Request
   ctx: TContext
 }
 
+/** Handlers for the singleton account state. */
 export type AccountServerHandlers<TContext> = {
   readChanges?: (input: ServerHandlerContext<TContext> & { since: number | null }) =>
     | ServerChangesResult
@@ -78,6 +82,7 @@ export type AccountServerHandlers<TContext> = {
   ) => ServerMutationResult | Promise<ServerMutationResult>
 }
 
+/** Handlers for a record collection. */
 export type CollectionServerHandlers<TContext> = {
   readChanges?: (input: ServerHandlerContext<TContext> & { since: number | null }) =>
     | ServerChangesResult
@@ -104,21 +109,25 @@ export type CollectionServerHandlers<TContext> = {
   ) => ServerMutationResult | Promise<ServerMutationResult>
 }
 
+/** Server handler map keyed by schema account and collection names. */
 export type ServerHandlers<TContext> = Record<
   string,
   AccountServerHandlers<TContext> | CollectionServerHandlers<TContext>
 >
 
+/** Options for creating a Fetch-compatible sync endpoint handler. */
 export type ValtioSyncServerOptions<TSchema extends SyncSchema, TContext> = {
   schema: TSchema
   handlers: ServerHandlers<TContext>
   getContext?: (request: Request) => TContext | Promise<TContext>
 }
 
+/** Fetch-compatible sync server returned by the server entrypoint. */
 export type ValtioSyncServer = {
   handle(request: Request): Promise<Response>
 }
 
+/** Error type used inside handlers to reject a sync operation with a protocol reason. */
 export class SyncRejection extends Error {
   reason: SyncRejectionReason
   serverRecord?: JsonRecord
@@ -139,6 +148,7 @@ export class SyncRejection extends Error {
   }
 }
 
+/** Reject the current sync operation from inside a server mutation handler. */
 export function rejectSync(
   reason: SyncRejectionReason,
   message?: string,
@@ -150,6 +160,7 @@ export function rejectSync(
   throw new SyncRejection(reason, message, options)
 }
 
+/** Create a server-side sync endpoint for a schema and handler map. */
 export function valtioSync<
   const TSchema extends SyncSchema,
   TContext = undefined,

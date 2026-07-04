@@ -1,5 +1,6 @@
 import type { JsonRecord, SyncError } from './protocol.js'
 
+/** Persisted collection record plus sync metadata. */
 export type StoredRecord<TData extends JsonRecord = JsonRecord> = {
   id: string
   data: TData
@@ -17,6 +18,7 @@ export type StoredRecord<TData extends JsonRecord = JsonRecord> = {
   }
 }
 
+/** Persisted singleton account data plus schema and sync metadata. */
 export type StoredAccount<TData extends JsonRecord = JsonRecord> = {
   data: TData
   meta: {
@@ -26,6 +28,7 @@ export type StoredAccount<TData extends JsonRecord = JsonRecord> = {
   }
 }
 
+/** Async storage adapter used by the client for account and collection state. */
 export type SyncStorage = {
   readAccount(): Promise<StoredAccount | null>
   writeAccount(account: StoredAccount): Promise<void>
@@ -38,12 +41,14 @@ export type SyncStorage = {
   close?(): void
 }
 
+/** Minimal Web Storage interface used for device and session local state. */
 export type WebStorageLike = {
   getItem(key: string): string | null
   setItem(key: string, value: string): void
   removeItem(key: string): void
 }
 
+/** Create an in-memory Web Storage replacement for tests and non-browser runtimes. */
 export function createMemoryWebStorage(): WebStorageLike {
   const values = new Map<string, string>()
   return {
@@ -57,6 +62,7 @@ export function createMemoryWebStorage(): WebStorageLike {
   }
 }
 
+/** Create an in-memory sync storage adapter, optionally seeded with existing data. */
 export function createMemorySyncStorage(initial?: {
   account?: StoredAccount
   collections?: Record<string, StoredRecord[]>
