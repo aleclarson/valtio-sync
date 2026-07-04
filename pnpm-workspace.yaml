@@ -3,5 +3,7 @@ packages:
 minimumReleaseAge: 10080
 minimumReleaseAgeExclude:
   - drizzle-orm
+  - exports-md@0.1.3
+  - lildocs@0.1.0
 allowBuilds:
   esbuild: true
