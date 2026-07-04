@@ -7,9 +7,7 @@ description: Use when changing the valtio-sync package implementation, tests, pu
 
 ## Working Rules
 
-Preserve the package goal: local-first Valtio persistence and sync for single-user save state. Avoid turning the package into realtime collaboration, CRDTs, a query DSL, or a general backend framework unless the user explicitly asks.
-
-Use public docs for current user-facing behavior:
+Use the packaged public docs for current user-facing behavior. In installed projects, these references point to files published with `valtio-sync`, such as `node_modules/valtio-sync/docs/*`:
 
 - `docs/schema.md` for schema, strict validation, defaults, and JSON-only records.
 - `docs/client.md` for client options, collection APIs, local persistence, sync, and debug behavior.
