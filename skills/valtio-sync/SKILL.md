@@ -1,46 +1,36 @@
 ---
 name: valtio-sync
-description: Use when changing the valtio-sync package implementation, tests, public package documentation, or API surface. Applies to Valtio client sync behavior, schema validation, local persistence, server sync handlers, the Drizzle helper, API snapshots, and agent-facing repository guidance.
+description: Use when adding, changing, testing, or debugging valtio-sync usage in an application that consumes the package. Applies to app schemas, client setup, local persistence, sync endpoints, server handlers, Drizzle integration, tests, and troubleshooting for installed valtio-sync projects.
 ---
 
 # valtio-sync
 
-## Working Rules
+Use this skill for application code that consumes `valtio-sync`. Do not treat it as maintainer guidance for changing the `valtio-sync` package itself unless the user explicitly asks to work on the package implementation.
 
-Use the packaged public docs for current user-facing behavior. In installed projects, these references point to files published with `valtio-sync`, such as `node_modules/valtio-sync/docs/*`:
+## Source of Truth
 
-- `docs/schema.md` for schema, strict validation, defaults, and JSON-only records.
-- `docs/client.md` for client options, collection APIs, local persistence, sync, and debug behavior.
-- `docs/server.md` for handler contracts, `readChanges`, `readSnapshot`, and `rejectSync`.
-- `docs/drizzle.md` for `applyOpsWithDrizzle`.
-- `docs/testing.md` and `docs/troubleshooting.md` for expected testing and failure behavior.
+Use the public docs packaged with the installed dependency for current behavior. In consuming projects, `docs/*` below means the files published with `valtio-sync`, typically under `node_modules/valtio-sync/docs/*`:
 
-Keep app ownership clear. The app owns authentication, authorization, persistence tables, business validation, server conflict policy, and database access. `valtio-sync` owns local cache hydration, dirty metadata, mutation compaction, request/response validation, and client application of accepted, rejected, and remote changes.
+- `docs/README.md` for the package overview and intended ownership boundary.
+- `docs/quickstart.md` for the minimal schema, client, and endpoint setup.
+- `docs/schema.md` for schema definitions, strict validation, defaults, and JSON-only records.
+- `docs/client.md` for client options, collection APIs, local persistence, sync, anonymous signup promotion, and debug helpers.
+- `docs/server.md` for handler contracts, `readChanges`, `readSnapshot`, idempotency, sync event retention, and `rejectSync`.
+- `docs/drizzle.md` for `applyOpsWithDrizzle` and Drizzle type-checked schema wrappers.
+- `docs/testing.md` and `docs/troubleshooting.md` for expected test setup and failure behavior.
 
-## Invariants
+Prefer the installed docs that match the app's installed `valtio-sync` version over assumptions from memory.
 
-- Require exactly one account definition in a sync schema.
-- Keep collection user records under `collections.<name>.records`; do not put metadata inside user proxies.
-- Validate synced records and patches through Zod and require JSON-serializable plain records.
-- Treat `device` and `session` as local-only state, not synced state.
-- Preserve explicit touched-field tracking. Creates should include touched fields, and untouched defaults should not be sent as user edits.
-- Keep rejected validation, forbidden, conflict, not-found, and server-error mutations from retrying indefinitely.
-- Preserve network retry behavior for dirty operations that could not reach the server.
-- Keep IndexedDB and Web Storage usage scoped by `namespace`.
+## Integration Rules
 
-## Change Workflow
+Keep app ownership clear. The application owns authentication, authorization, persistence tables, business validation, server conflict policy, database access, and retention jobs. `valtio-sync` owns the client mutation model, local cache behavior, request/response validation, and sync protocol contract.
 
-Read the narrow public doc that matches the change before editing behavior. Update docs when public API or user-visible semantics change.
+Define exactly one account schema and any number of collection schemas. Collection records should have an `id: z.string()` field, and synced records and patches must be JSON-serializable plain data validated by Zod.
 
-Prefer local, explicit code over helper sprawl. Extract only for durable boundaries such as schema validation, storage, protocol parsing, server contracts, or Drizzle integration.
+Use a stable `namespace` that isolates local data per app and user or account. Treat synced records, `device`, and `session` as browser-persisted user data caches, not secure secret storage.
 
-Before committing, run relevant checks:
+Implement server handlers against the authenticated request context. Mutation handlers should be idempotent by `op.mutationId` for the authenticated user and return `{ serverVersion, record? }`, including `record` when the server canonicalizes stored data.
 
-```sh
-pnpm typecheck
-pnpm test -- --run
-pnpm lint
-pnpm build
-```
+When using `readChanges`, handle `since: null` as bootstrap for a new device. Return `changes.mode: "snapshot"` when the retained event feed cannot reconstruct complete collection state; otherwise use `readSnapshot` for authoritative full-state reads.
 
-API snapshots are review-sensitive. If an API snapshot test fails, inspect the diff first. Run `pnpm tsnapi -u` only when the API change is intentional and should become the committed contract.
+For tests, use the memory storage helpers, call `flush()` before inspecting pending operations, and use `debug` helpers only for diagnostics and assertions.
