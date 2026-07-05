@@ -10,6 +10,7 @@ protect_breaking_commits = false
 filter_commits = true
 commit_parsers = [
   { message = "^[a-z]+\\(ci\\)!?:", skip = true },
+  { message = "^docs\\(skill\\)!?:", skip = true },
   { message = "^[a-z]+(\\([^)]*\\))?!:", group = "Breaking Changes" },
   { footer = "BREAKING[ -]CHANGE", group = "Breaking Changes" },
   { message = "^feat", group = "Features" },
