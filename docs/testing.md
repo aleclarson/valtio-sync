@@ -37,7 +37,7 @@ await sync.ready;
 Call `flush()` before inspecting pending operations:
 
 ```ts
-sync.collections.todos.create({ id: "todo_1", title: "Draft" });
+sync.todos.create({ id: "todo_1", title: "Draft" });
 await sync.flush();
 
 expect(sync.debug.getPendingOps()).toMatchObject([
@@ -50,7 +50,7 @@ When using fake timers, advance the local write batch window before `flush()`:
 ```ts
 vi.useFakeTimers();
 
-sync.collections.todos.records.todo_1.title = "Changed";
+sync.todos.records.todo_1.title = "Changed";
 await vi.advanceTimersByTimeAsync(100);
 await sync.flush();
 ```

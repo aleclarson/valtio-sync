@@ -1,6 +1,11 @@
 import { z } from 'zod'
 import { valtioSync } from '../src/client.js'
-import { ACCOUNT_COLLECTION, defineAccount, defineCollection } from '../src/schema.js'
+import {
+  ACCOUNT_COLLECTION,
+  defineAccount,
+  defineCollection,
+  type SyncSchema,
+} from '../src/schema.js'
 import {
   type StoredRecord,
   createMemorySyncStorage,
@@ -71,7 +76,16 @@ test('hydrates defaults from an empty local cache', async () => {
   expect(vs.account).toMatchObject({ theme: 'light' })
   expect(vs.device).toMatchObject({ deviceId: 'device_1' })
   expect(vs.session).toMatchObject({ sidebarOpen: false })
-  expect(vs.collections.todos.list()).toEqual([])
+  expect(vs.todos.list()).toEqual([])
+})
+
+test('rejects collection names reserved by the client API', () => {
+  expect(() =>
+    valtioSync({
+      endpoint: '/api/sync',
+      schema: { account, sync: todos } as SyncSchema,
+    }),
+  ).toThrow('Collection name is reserved by the client API: sync')
 })
 
 test('hydrates cached records after local migrations', async () => {
@@ -115,7 +129,7 @@ test('hydrates cached records after local migrations', async () => {
   await vs.ready
 
   expect(vs.account).toMatchObject({ theme: 'dark' })
-  expect(vs.collections.todos.get('todo_1')).toMatchObject({
+  expect(vs.todos.get('todo_1')).toMatchObject({
     id: 'todo_1',
     title: 'Old migrated',
     completed: false,
@@ -162,7 +176,7 @@ test('clears persisted local data and resets proxies', async () => {
   expect(localStorage.getItem('valtio-sync:user_1:device')).toBeNull()
   expect(vs.account).toMatchObject({ theme: 'light' })
   expect(vs.device).toMatchObject({ deviceId: 'device_1' })
-  expect(vs.collections.todos.list()).toEqual([])
+  expect(vs.todos.list()).toEqual([])
 })
 
 test('adopts anonymous local data into a new account and clears source after sync', async () => {
@@ -221,7 +235,7 @@ test('adopts anonymous local data into a new account and clears source after syn
   anonymous.account.theme = 'dark'
   anonymous.device.deviceId = 'anonymous_device'
   anonymous.session.sidebarOpen = true
-  anonymous.collections.todos.create({ id: 'todo_1', title: 'Anonymous draft' })
+  anonymous.todos.create({ id: 'todo_1', title: 'Anonymous draft' })
 
   await signedIn.adoptLocalData(anonymous, {
     sync: true,
@@ -231,11 +245,11 @@ test('adopts anonymous local data into a new account and clears source after syn
   expect(signedIn.account).toMatchObject({ theme: 'dark' })
   expect(signedIn.device).toMatchObject({ deviceId: 'anonymous_device' })
   expect(signedIn.session).toMatchObject({ sidebarOpen: true })
-  expect(signedIn.collections.todos.get('todo_1')).toMatchObject({
+  expect(signedIn.todos.get('todo_1')).toMatchObject({
     title: 'Anonymous draft',
   })
   expect(signedIn.status.dirty).toBe(false)
-  expect(anonymous.collections.todos.list()).toEqual([])
+  expect(anonymous.todos.list()).toEqual([])
   expect(await sourceStorage.listRecords('todos')).toEqual([])
   expect(syncRequests).toHaveLength(1)
   expect(syncRequests[0]).toMatchObject({
@@ -285,7 +299,7 @@ test('keeps anonymous source data when promoted sync fails', async () => {
     sessionStorage: createMemoryWebStorage(),
   })
   await Promise.all([anonymous.ready, signedIn.ready])
-  anonymous.collections.todos.create({ id: 'todo_1', title: 'Keep me' })
+  anonymous.todos.create({ id: 'todo_1', title: 'Keep me' })
 
   await expect(
     signedIn.adoptLocalData(anonymous, {
@@ -295,7 +309,7 @@ test('keeps anonymous source data when promoted sync fails', async () => {
   ).rejects.toThrow('source local data was not cleared')
 
   expect(signedIn.status.dirty).toBe(true)
-  expect(anonymous.collections.todos.get('todo_1')).toMatchObject({ title: 'Keep me' })
+  expect(anonymous.todos.get('todo_1')).toMatchObject({ title: 'Keep me' })
   expect(await sourceStorage.listRecords('todos')).toHaveLength(1)
   signedIn.close()
 })
@@ -322,10 +336,10 @@ test('rejects anonymous local data adoption into a non-empty target', async () =
     sessionStorage: createMemoryWebStorage(),
   })
   await Promise.all([anonymous.ready, signedIn.ready])
-  anonymous.collections.todos.create({ id: 'todo_1', title: 'Anonymous draft' })
+  anonymous.todos.create({ id: 'todo_1', title: 'Anonymous draft' })
 
   await expect(signedIn.adoptLocalData(anonymous)).rejects.toThrow('target with cached records')
-  expect(signedIn.collections.todos.get('todo_existing')).toMatchObject({
+  expect(signedIn.todos.get('todo_existing')).toMatchObject({
     title: 'Existing',
   })
 })
@@ -354,11 +368,11 @@ test('broadcasts local collection changes to another tab', async () => {
   })
   await Promise.all([firstTab.ready, secondTab.ready])
 
-  firstTab.collections.todos.create({ id: 'todo_1', title: 'From tab one' })
+  firstTab.todos.create({ id: 'todo_1', title: 'From tab one' })
   await firstTab.flush()
-  await waitFor(() => secondTab.collections.todos.get('todo_1') !== undefined)
+  await waitFor(() => secondTab.todos.get('todo_1') !== undefined)
 
-  expect(secondTab.collections.todos.get('todo_1')).toMatchObject({
+  expect(secondTab.todos.get('todo_1')).toMatchObject({
     title: 'From tab one',
   })
 

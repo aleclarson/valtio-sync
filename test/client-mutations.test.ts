@@ -63,14 +63,14 @@ test('create then delete before flush sends no op', async () => {
   )
   await vs.ready
 
-  vs.collections.todos.create({ id: 'todo_1', title: 'Draft' })
-  vs.collections.todos.delete('todo_1')
+  vs.todos.create({ id: 'todo_1', title: 'Draft' })
+  vs.todos.delete('todo_1')
   await vi.advanceTimersByTimeAsync(100)
   await vs.flush()
 
   expect(vs.debug.getPendingOps()).toEqual([])
   expect(vs.status.dirty).toBe(false)
-  expect(vs.collections.todos.list()).toEqual([])
+  expect(vs.todos.list()).toEqual([])
 })
 
 test('update then update compacts to one final patch', async () => {
@@ -88,8 +88,8 @@ test('update then update compacts to one final patch', async () => {
   )
   await vs.ready
 
-  vs.collections.todos.update('todo_1', { title: 'New' })
-  vs.collections.todos.update('todo_1', { completed: true })
+  vs.todos.update('todo_1', { title: 'New' })
+  vs.todos.update('todo_1', { completed: true })
   await vi.advanceTimersByTimeAsync(100)
   await vs.flush()
 
@@ -118,8 +118,8 @@ test('create omits untouched defaults but includes explicitly touched defaults',
   )
   await vs.ready
 
-  vs.collections.todos.create({ id: 'todo_1', title: 'Implicit default' })
-  vs.collections.todos.create({
+  vs.todos.create({ id: 'todo_1', title: 'Implicit default' })
+  vs.todos.create({
     id: 'todo_2',
     title: 'Explicit default',
     completed: false,
@@ -164,7 +164,7 @@ test('direct proxy mutation becomes a dirty update after the batch window', asyn
   )
   await vs.ready
 
-  vs.collections.todos.records.todo_1.title = 'Direct'
+  vs.todos.records.todo_1.title = 'Direct'
   await vi.advanceTimersByTimeAsync(100)
   await vs.flush()
 

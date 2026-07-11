@@ -221,7 +221,7 @@ await vs.reset();
 ```
 
 ```ts
-const report = await vs.collections.todos.pruneLocal(candidateIds, {
+const report = await vs.todos.pruneLocal(candidateIds, {
   dryRun: true,
 });
 ```

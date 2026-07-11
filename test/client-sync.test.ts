@@ -83,16 +83,16 @@ test('accepted create applies canonical record and clears dirty state', async ()
   })
   await vs.ready
 
-  vs.collections.todos.create({ id: 'todo_1', title: 'Local' })
+  vs.todos.create({ id: 'todo_1', title: 'Local' })
   await vs.sync()
 
-  expect(vs.collections.todos.get('todo_1')).toMatchObject({
+  expect(vs.todos.get('todo_1')).toMatchObject({
     id: 'todo_1',
     title: 'Canonical',
   })
   expect(vs.status.dirty).toBe(false)
   expect(vs.debug.getPendingOps()).toEqual([])
-  expect(vs.debug.getRecordMeta(vs.collections.todos, 'todo_1')).toMatchObject({
+  expect(vs.debug.getRecordMeta(vs.todos, 'todo_1')).toMatchObject({
     dirty: false,
     serverVersion: 4,
   })
@@ -124,10 +124,10 @@ test('rejected validation keeps optimistic value and stops retrying', async () =
   })
   await vs.ready
 
-  vs.collections.todos.create({ id: 'todo_1', title: 'Optimistic' })
+  vs.todos.create({ id: 'todo_1', title: 'Optimistic' })
   await vs.sync()
 
-  expect(vs.collections.todos.get('todo_1')).toMatchObject({ title: 'Optimistic' })
+  expect(vs.todos.get('todo_1')).toMatchObject({ title: 'Optimistic' })
   expect(vs.status.dirty).toBe(false)
   expect(vs.status.lastError).toMatchObject({
     reason: 'validation',
@@ -172,16 +172,16 @@ test('rejected conflict keeps optimistic value and records conflict metadata', a
   })
   await vs.ready
 
-  vs.collections.todos.update('todo_1', { title: 'Local' })
+  vs.todos.update('todo_1', { title: 'Local' })
   await vs.sync()
 
-  expect(vs.collections.todos.get('todo_1')).toMatchObject({ title: 'Local' })
+  expect(vs.todos.get('todo_1')).toMatchObject({ title: 'Local' })
   expect(vs.status.dirty).toBe(false)
   expect(vs.status.lastError).toMatchObject({
     reason: 'conflict',
     message: 'Base version is stale',
   })
-  expect(vs.debug.getRecordMeta(vs.collections.todos, 'todo_1')).toMatchObject({
+  expect(vs.debug.getRecordMeta(vs.todos, 'todo_1')).toMatchObject({
     dirty: false,
     lastError: {
       reason: 'conflict',
@@ -200,7 +200,7 @@ test('network failure preserves dirty record for a later retry', async () => {
   })
   await vs.ready
 
-  vs.collections.todos.create({ id: 'todo_1', title: 'Local' })
+  vs.todos.create({ id: 'todo_1', title: 'Local' })
   await vs.sync()
 
   expect(vs.status.dirty).toBe(true)
@@ -247,7 +247,7 @@ test('remote changes apply to clean records', async () => {
 
   await vs.sync()
 
-  expect(vs.collections.todos.get('todo_1')).toMatchObject({
+  expect(vs.todos.get('todo_1')).toMatchObject({
     title: 'Remote',
     completed: true,
   })
@@ -290,15 +290,15 @@ test('snapshot changes remove absent clean records and preserve dirty records', 
   })
   await vs.ready
 
-  vs.collections.todos.update('todo_dirty', { title: 'Local' })
+  vs.todos.update('todo_dirty', { title: 'Local' })
   await vs.sync()
 
-  expect(vs.collections.todos.get('todo_stale')).toBeUndefined()
-  expect(vs.collections.todos.get('todo_remote')).toMatchObject({
+  expect(vs.todos.get('todo_stale')).toBeUndefined()
+  expect(vs.todos.get('todo_remote')).toMatchObject({
     title: 'Remote',
     completed: true,
   })
-  expect(vs.collections.todos.get('todo_dirty')).toMatchObject({ title: 'Local' })
+  expect(vs.todos.get('todo_dirty')).toMatchObject({ title: 'Local' })
   expect(await storage.readRecord('todos', 'todo_stale')).toBeNull()
   expect(vs.status.dirty).toBe(true)
 })
@@ -338,13 +338,13 @@ test('remote changes conflict with dirty records under rejectStale', async () =>
   })
   await vs.ready
 
-  vs.collections.todos.update('todo_1', { title: 'Local' })
+  vs.todos.update('todo_1', { title: 'Local' })
   await vs.sync()
 
-  expect(vs.collections.todos.get('todo_1')).toMatchObject({ title: 'Local' })
+  expect(vs.todos.get('todo_1')).toMatchObject({ title: 'Local' })
   expect(vs.status.dirty).toBe(false)
   expect(vs.status.lastError).toMatchObject({ reason: 'conflict' })
-  expect(vs.debug.getRecordMeta(vs.collections.todos, 'todo_1')).toMatchObject({
+  expect(vs.debug.getRecordMeta(vs.todos, 'todo_1')).toMatchObject({
     dirty: false,
     lastError: {
       reason: 'conflict',

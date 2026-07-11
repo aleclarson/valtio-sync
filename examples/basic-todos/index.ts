@@ -103,7 +103,7 @@ await sync.ready
 
 // Application code mutates Valtio state normally. The client persists the write
 // locally, marks it dirty, and sends it on the next sync.
-const todo = sync.collections.todos.create({
+const todo = sync.todos.create({
   id: 'todo_1',
   title: ' Ship the first example ',
 })
@@ -111,7 +111,7 @@ const todo = sync.collections.todos.create({
 todo.completed = true
 await sync.sync()
 
-console.log(sync.collections.todos.list())
+console.log(sync.todos.list())
 sync.close()
 
 function normalizeTodo(todo: Todo): Todo {

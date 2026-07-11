@@ -30,7 +30,7 @@ describe('todo sync', () => {
     try {
       await sync.ready
 
-      sync.collections.todos.create({ id: 'todo_1', title: 'Draft' })
+      sync.todos.create({ id: 'todo_1', title: 'Draft' })
       // Flush makes batched local writes deterministic before reading debug
       // state. It is usually the right boundary for unit tests.
       await sync.flush()
@@ -59,10 +59,10 @@ describe('todo sync', () => {
     try {
       await sync.ready
 
-      sync.collections.todos.create({ id: 'todo_1', title: 'Draft' })
+      sync.todos.create({ id: 'todo_1', title: 'Draft' })
       await sync.sync()
 
-      sync.collections.todos.records.todo_1.title = 'Changed'
+      sync.todos.records.todo_1.title = 'Changed'
       // Direct proxy writes are batched for normal app usage. With fake timers,
       // advance the batch window before flushing.
       await vi.advanceTimersByTimeAsync(100)

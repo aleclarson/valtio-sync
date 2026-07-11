@@ -33,8 +33,8 @@ const vs = valtioSync({
 
 await vs.ready;
 
-vs.collections.todos.create({ id: "todo_1", title: "Ship v1" });
-vs.collections.todos.records.todo_1.completed = true;
+vs.todos.create({ id: "todo_1", title: "Ship v1" });
+vs.todos.records.todo_1.completed = true;
 await vs.sync();
 ```
 

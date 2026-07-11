@@ -66,7 +66,7 @@ Collections should include an `id: z.string()` field. The collection API creates
 Defaults are applied when records are created and when local cache data is hydrated:
 
 ```ts
-const todo = sync.collections.todos.create({ id: "todo_1" });
+const todo = sync.todos.create({ id: "todo_1" });
 todo.title; // ""
 todo.completed; // false
 ```

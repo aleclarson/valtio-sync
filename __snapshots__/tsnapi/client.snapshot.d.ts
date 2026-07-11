@@ -171,9 +171,8 @@ export type UpdateSyncOp = {
   touched: string[];
   baseServerVersion: number | null;
 };
-export type ValtioSyncClient<TSchema extends SyncSchema = SyncSchema> = {
+export type ValtioSyncClient<TSchema extends SyncSchema = SyncSchema> = CollectionMap<TSchema> & {
   readonly account: AccountState<TSchema>;
-  readonly collections: CollectionMap<TSchema>;
   readonly device: JsonRecord;
   readonly session: JsonRecord;
   readonly status: ValtioSyncStatus;
@@ -202,7 +201,7 @@ export type ValtioSyncClient<TSchema extends SyncSchema = SyncSchema> = {
 export type ValtioSyncClientOptions<TSchema extends SyncSchema, TDevice extends FieldMap | undefined = undefined, TSession extends FieldMap | undefined = undefined> = {
   endpoint: string;
   namespace?: string;
-  schema: TSchema;
+  schema: ClientSchema<TSchema>;
   device?: TDevice;
   session?: TSession;
   schemaVersion?: number;

@@ -54,12 +54,12 @@ Mutate the returned Valtio proxies directly:
 ```ts
 sync.account.theme = "dark";
 
-sync.collections.todos.create({
+sync.todos.create({
   id: "todo_1",
   title: "Ship v1",
 });
 
-sync.collections.todos.records.todo_1.completed = true;
+sync.todos.records.todo_1.completed = true;
 await sync.sync();
 ```
 

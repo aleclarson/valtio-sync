@@ -51,7 +51,7 @@ test('prunes clean records locally without producing server delete operations', 
   })
   await vs.ready
 
-  const result = await vs.collections.entries.pruneLocal(['old'])
+  const result = await vs.entries.pruneLocal(['old'])
 
   expect(result).toEqual({
     dryRun: false,
@@ -61,8 +61,8 @@ test('prunes clean records locally without producing server delete operations', 
     missing: [],
     protected: [],
   })
-  expect(vs.collections.entries.get('old')).toBeUndefined()
-  expect(vs.collections.entries.get('keep')).toMatchObject({ label: 'keep' })
+  expect(vs.entries.get('old')).toBeUndefined()
+  expect(vs.entries.get('keep')).toMatchObject({ label: 'keep' })
   expect(await storage.readRecord('entries', 'old')).toBeNull()
   expect(vs.debug.getPendingOps()).toEqual([])
 
@@ -89,9 +89,9 @@ test('dry-run reports actionable records and pruning preserves them', async () =
     storage,
   })
   await vs.ready
-  vs.collections.entries.create({ id: 'dirty-create', label: 'new' })
+  vs.entries.create({ id: 'dirty-create', label: 'new' })
 
-  const result = await vs.collections.entries.pruneLocal(
+  const result = await vs.entries.pruneLocal(
     ['clean', 'dirty-update', 'pending-delete', 'conflicted', 'dirty-create', 'missing'],
     { dryRun: true },
   )
@@ -110,18 +110,18 @@ test('dry-run reports actionable records and pruning preserves them', async () =
     ],
   })
   expect(await storage.readRecord('entries', 'clean')).not.toBeNull()
-  expect(vs.collections.entries.get('clean')).toBeDefined()
+  expect(vs.entries.get('clean')).toBeDefined()
 
-  const pruned = await vs.collections.entries.pruneLocal(result.requested)
+  const pruned = await vs.entries.pruneLocal(result.requested)
   expect(pruned.evicted).toEqual(['clean'])
   expect(pruned.protected).toEqual(result.protected)
   expect(await storage.readRecord('entries', 'dirty-update')).not.toBeNull()
   expect(await storage.readRecord('entries', 'pending-delete')).not.toBeNull()
   expect(await storage.readRecord('entries', 'conflicted')).not.toBeNull()
   expect(await storage.readRecord('entries', 'dirty-create')).not.toBeNull()
-  expect(vs.collections.entries.get('dirty-update')).toBeDefined()
-  expect(vs.collections.entries.get('conflicted')).toBeDefined()
-  expect(vs.collections.entries.get('dirty-create')).toBeDefined()
+  expect(vs.entries.get('dirty-update')).toBeDefined()
+  expect(vs.entries.get('conflicted')).toBeDefined()
+  expect(vs.entries.get('dirty-create')).toBeDefined()
 })
 
 test('compare-and-delete preserves a record changed by another client', async () => {
@@ -145,14 +145,14 @@ test('compare-and-delete preserves a record changed by another client', async ()
   })
   await vs.ready
 
-  const result = await vs.collections.entries.pruneLocal(['entry_1'])
+  const result = await vs.entries.pruneLocal(['entry_1'])
 
   expect(result.evicted).toEqual([])
   expect(result.protected).toEqual([{ id: 'entry_1', reason: 'changed' }])
   expect(await storage.readRecord('entries', 'entry_1')).toMatchObject({
     meta: { dirty: true, mutationId: 'other_tab' },
   })
-  expect(vs.collections.entries.get('entry_1')).toBeDefined()
+  expect(vs.entries.get('entry_1')).toBeDefined()
   expect(vs.debug.getPendingOps()).toMatchObject([
     { collection: 'entries', id: 'entry_1', type: 'update' },
   ])
@@ -183,20 +183,20 @@ test('dependent collections can be pruned in stages from retained records', asyn
   })
   await vs.ready
 
-  await vs.collections.meals.pruneLocal(
-    vs.collections.meals
+  await vs.meals.pruneLocal(
+    vs.meals
       .list()
       .filter((meal) => meal.day < 90)
       .map((meal) => meal.id),
   )
-  const referenced = new Set(vs.collections.meals.list().map((meal) => meal.foodVersionId))
-  await vs.collections.foods.pruneLocal(
-    vs.collections.foods
+  const referenced = new Set(vs.meals.list().map((meal) => meal.foodVersionId))
+  await vs.foods.pruneLocal(
+    vs.foods
       .list()
       .filter((food) => !food.current && !referenced.has(food.id))
       .map((food) => food.id),
   )
 
-  expect(vs.collections.meals.list().map((meal) => meal.id)).toEqual(['new-meal'])
-  expect(vs.collections.foods.list().map((food) => food.id)).toEqual(['food-used', 'food-current'])
+  expect(vs.meals.list().map((meal) => meal.id)).toEqual(['new-meal'])
+  expect(vs.foods.list().map((food) => food.id)).toEqual(['food-used', 'food-current'])
 })

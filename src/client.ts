@@ -132,6 +132,28 @@ type CollectionMap<TSchema extends SyncSchema> = {
     : never
 }
 
+const clientPropertyKeys = [
+  'account',
+  'device',
+  'session',
+  'status',
+  'ready',
+  'flush',
+  'sync',
+  'adoptLocalData',
+  'clearLocalData',
+  'clearCollection',
+  'reset',
+  'close',
+  'debug',
+] as const
+
+type ClientPropertyKey = (typeof clientPropertyKeys)[number]
+
+type ClientSchema<TSchema extends SyncSchema> = TSchema & {
+  [K in Extract<CollectionKey<TSchema>, ClientPropertyKey>]: never
+}
+
 type AccountState<TSchema extends SyncSchema> =
   TSchema[Extract<keyof TSchema, string>] extends AccountDefinition<infer TFields>
     ? InferFields<TFields> & JsonRecord
@@ -142,9 +164,8 @@ type LocalState<TFields extends FieldMap | undefined> = TFields extends FieldMap
   : JsonRecord
 
 /** Client returned by the browser/client entrypoint. */
-export type ValtioSyncClient<TSchema extends SyncSchema = SyncSchema> = {
+export type ValtioSyncClient<TSchema extends SyncSchema = SyncSchema> = CollectionMap<TSchema> & {
   readonly account: AccountState<TSchema>
-  readonly collections: CollectionMap<TSchema>
   readonly device: JsonRecord
   readonly session: JsonRecord
   readonly status: ValtioSyncStatus
@@ -175,7 +196,7 @@ export type ValtioSyncClientOptions<
 > = {
   endpoint: string
   namespace?: string
-  schema: TSchema
+  schema: ClientSchema<TSchema>
   device?: TDevice
   session?: TSession
   schemaVersion?: number
@@ -251,6 +272,12 @@ export function valtioSync<
   const accountKey = getAccountKey(options.schema)
   const accountDefinition = options.schema[accountKey] as AccountDefinition
   const collectionKeys = getCollectionKeys(options.schema) as string[]
+  const reservedCollectionKey = collectionKeys.find((key) =>
+    (clientPropertyKeys as readonly string[]).includes(key),
+  )
+  if (reservedCollectionKey) {
+    throw new Error(`Collection name is reserved by the client API: ${reservedCollectionKey}`)
+  }
   const schemaVersion = getTargetSchemaVersion(options.schemaVersion, options.migrations)
   const status = proxy<ValtioSyncStatus>({
     hydrated: false,
@@ -1487,8 +1514,8 @@ export function valtioSync<
     readonly device: LocalState<TDevice>
     readonly session: LocalState<TSession>
   } = {
+    ...(collections as CollectionMap<TSchema>),
     account: account as AccountState<TSchema>,
-    collections: collections as CollectionMap<TSchema>,
     device: device as LocalState<TDevice>,
     session: session as LocalState<TSession>,
     status,

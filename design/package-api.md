@@ -162,7 +162,7 @@ export const todos = defineCollection({
 Recommended collection API:
 
 ```ts
-const todoCollection = vs.collections.todos;
+const todoCollection = vs.todos;
 
 todoCollection.records[id].title = "New title";
 
@@ -175,20 +175,23 @@ todoCollection.list();
 await todoCollection.pruneLocal(ids, { dryRun: true });
 ```
 
+Collection names are direct client properties, so names that collide with the built-in client
+surface are reserved and rejected by the client factory.
+
 The collection should expose an explicit `records` property instead of making the collection itself indexable. `todos[id]` is elegant, but it collides with collection methods and special properties.
 
 Recommended collection surface:
 
 ```ts
-vs.collections.todos.records; // Valtio proxy object keyed by id
-vs.collections.todos.create;
-vs.collections.todos.update;
-vs.collections.todos.delete;
-vs.collections.todos.get;
-vs.collections.todos.list;
-vs.collections.todos.flush;
-vs.collections.todos.sync;
-vs.collections.todos.pruneLocal;
+vs.todos.records; // Valtio proxy object keyed by id
+vs.todos.create;
+vs.todos.update;
+vs.todos.delete;
+vs.todos.get;
+vs.todos.list;
+vs.todos.flush;
+vs.todos.sync;
+vs.todos.pruneLocal;
 ```
 
 `pruneLocal` is explicit local cache maintenance. It accepts application-selected IDs, never emits delete mutations, and refuses to remove locally actionable records. Retention policy does not belong on platform-agnostic collection definitions shared with the server.

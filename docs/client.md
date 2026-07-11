@@ -23,7 +23,7 @@ await sync.ready;
 The returned object exposes:
 
 - `account`: synced singleton account proxy.
-- `collections`: named collection APIs.
+- one direct property for each named collection in the schema.
 - `device`: local-only proxy stored in `localStorage`.
 - `session`: local-only proxy stored in `sessionStorage`.
 - `status`: Valtio proxy with hydration, sync, dirty, online, and error state.
@@ -38,16 +38,19 @@ The returned object exposes:
 Collection APIs expose:
 
 ```ts
-const todo = sync.collections.todos.create({ id: "todo_1", title: "Ship" });
-sync.collections.todos.update("todo_1", { completed: true });
-sync.collections.todos.records.todo_1.title = "Ship v1";
-sync.collections.todos.delete("todo_1");
+const todo = sync.todos.create({ id: "todo_1", title: "Ship" });
+sync.todos.update("todo_1", { completed: true });
+sync.todos.records.todo_1.title = "Ship v1";
+sync.todos.delete("todo_1");
 
-sync.collections.todos.get("todo_1");
-sync.collections.todos.list();
-await sync.collections.todos.flush();
-await sync.collections.todos.sync();
+sync.todos.get("todo_1");
+sync.todos.list();
+await sync.todos.flush();
+await sync.todos.sync();
 ```
+
+Collection names cannot collide with built-in client properties such as `account`, `device`,
+`ready`, `sync`, or `debug`.
 
 Direct proxy mutations and collection helper calls both become dirty sync operations. Local writes are batched briefly; call `flush()` before tests or before inspecting `debug.getPendingOps()`.
 
@@ -57,12 +60,12 @@ Direct proxy mutations and collection helper calls both become dirty sync operat
 
 ```ts
 const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
-const oldOrderIds = sync.collections.orders
+const oldOrderIds = sync.orders
   .list()
   .filter((order) => order.orderedAt < cutoff)
   .map((order) => order.id);
 
-const report = await sync.collections.orders.pruneLocal(oldOrderIds);
+const report = await sync.orders.pruneLocal(oldOrderIds);
 ```
 
 The report separates `eligible`, `evicted`, `missing`, and `protected` IDs. Pass `{ dryRun: true }` to run the same safety checks without writing.
@@ -70,12 +73,12 @@ The report separates `eligible`, `evicted`, `missing`, and `protected` IDs. Pass
 Retention and relationship policies stay in application code. Prune related collections in dependency order, deriving each stage from records actually retained by the previous stage:
 
 ```ts
-await sync.collections.orders.pruneLocal(oldOrderIds);
+await sync.orders.pruneLocal(oldOrderIds);
 const retainedProductVersionIds = new Set(
-  sync.collections.orders.list().flatMap((order) => order.productVersionIds),
+  sync.orders.list().flatMap((order) => order.productVersionIds),
 );
-await sync.collections.productVersions.pruneLocal(
-  sync.collections.productVersions
+await sync.productVersions.pruneLocal(
+  sync.productVersions
     .list()
     .filter(
       (version) => !version.current && !retainedProductVersionIds.has(version.id),
@@ -131,7 +134,7 @@ Client options include:
 sync.debug.getStatus();
 sync.debug.getPendingOps();
 sync.debug.getDirtyRecords();
-sync.debug.getRecordMeta(sync.collections.todos, "todo_1");
+sync.debug.getRecordMeta(sync.todos, "todo_1");
 sync.debug.getLastSyncRequest();
 sync.debug.getLastSyncResponse();
 ```
