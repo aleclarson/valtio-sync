@@ -61,6 +61,12 @@ default. Snapshot changes are authoritative for clean local collection records,
 which lets servers prune old event rows and fall back to a full snapshot when a
 client's cursor is older than the retained event floor.
 
+## Local Cache Pruning
+
+Local retention is separate from pull semantics. Explicit pruning evicts selected server-clean records without changing `lastServerSeq`, so ordinary pulls remain incremental. It is neither a sync response capability nor a delete op: the server returns synchronization facts, while applications own their cached subset.
+
+Dirty records, pending tombstones, and records carrying rejection or conflict errors are never eligible. Initial and stale-cursor snapshots remain authoritative correctness fallbacks.
+
 ## Conflict Policy
 
 Default to `rejectStale`, not last-write-wins.

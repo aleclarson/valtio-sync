@@ -51,6 +51,39 @@ await sync.collections.todos.sync();
 
 Direct proxy mutations and collection helper calls both become dirty sync operations. Local writes are batched briefly; call `flush()` before tests or before inspecting `debug.getPendingOps()`.
 
+## Bounded Local Replicas
+
+`collection.pruneLocal(ids)` evicts application-selected records from the local cache without creating server delete operations or changing the sync cursor. The client refuses to evict dirty creates, updates, pending deletes, and records with rejection or conflict metadata. There is no force option.
+
+```ts
+const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+const oldMealIds = sync.collections.meals
+  .list()
+  .filter((meal) => meal.occurredAt < cutoff)
+  .map((meal) => meal.id);
+
+const report = await sync.collections.meals.pruneLocal(oldMealIds);
+```
+
+The report separates `eligible`, `evicted`, `missing`, and `protected` IDs. Pass `{ dryRun: true }` to run the same safety checks without writing.
+
+Retention and relationship policy stays in application code. Prune related collections in dependency order, deriving each stage from records actually retained by the previous stage:
+
+```ts
+await sync.collections.meals.pruneLocal(oldMealIds);
+const retainedFoodVersions = new Set(
+  sync.collections.meals.list().map((meal) => meal.foodVersionId),
+);
+await sync.collections.foodVersions.pruneLocal(
+  sync.collections.foodVersions
+    .list()
+    .filter((food) => !food.current && !retainedFoodVersions.has(food.id))
+    .map((food) => food.id),
+);
+```
+
+This preserves dependencies referenced by a record that was protected from pruning. A crash between stages only leaves extra cache data. Persistent storage is updated before reactive state, and compare-and-delete semantics preserve a newer concurrent tab mutation. Initial and stale-cursor authoritative snapshots remain the correctness fallback and may repopulate records still in server scope.
+
 ## Anonymous Signup Promotion
 
 Use a stable anonymous namespace before signup:

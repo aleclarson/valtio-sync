@@ -172,6 +172,7 @@ todoCollection.delete(id);
 
 todoCollection.get(id);
 todoCollection.list();
+await todoCollection.pruneLocal(ids, { dryRun: true });
 ```
 
 The collection should expose an explicit `records` property instead of making the collection itself indexable. `todos[id]` is elegant, but it collides with collection methods and special properties.
@@ -187,6 +188,9 @@ vs.collections.todos.get;
 vs.collections.todos.list;
 vs.collections.todos.flush;
 vs.collections.todos.sync;
+vs.collections.todos.pruneLocal;
 ```
+
+`pruneLocal` is explicit local cache maintenance. It accepts application-selected IDs, never emits delete mutations, and refuses to remove locally actionable records. Retention policy does not belong on platform-agnostic collection definitions shared with the server.
 
 The client also exposes `vs.ready`, a promise that resolves after local device/session state, IndexedDB cache, migrations, validation, and proxy hydration complete.

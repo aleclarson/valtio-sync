@@ -36,6 +36,11 @@ export type SyncStorage = {
   readRecord(collection: string, id: string): Promise<StoredRecord | null>
   writeRecord(collection: string, record: StoredRecord): Promise<void>
   deleteRecord(collection: string, id: string): Promise<void>
+  /** Atomically delete records that still match the caller's observations. */
+  deleteRecordsIfUnchanged(
+    collection: string,
+    records: readonly StoredRecord[],
+  ): Promise<string[]>
   clearCollection(collection: string): Promise<void>
   clearAll(): Promise<void>
   close?(): void
@@ -105,6 +110,18 @@ export function createMemorySyncStorage(initial?: {
     async deleteRecord(collection, id) {
       getCollection(collection).delete(id)
     },
+    async deleteRecordsIfUnchanged(collection, expectedRecords) {
+      const records = getCollection(collection)
+      const deleted: string[] = []
+      for (const expected of expectedRecords) {
+        const current = records.get(expected.id)
+        if (current && recordsEqual(current, expected)) {
+          records.delete(expected.id)
+          deleted.push(expected.id)
+        }
+      }
+      return deleted
+    },
     async clearCollection(collection) {
       getCollection(collection).clear()
     },
@@ -161,6 +178,10 @@ export function createIndexedDbSyncStorage(options: {
     async deleteRecord(collection, id) {
       const db = await open()
       await deleteFromStore(db, collectionStore(collection), id)
+    },
+    async deleteRecordsIfUnchanged(collection, records) {
+      const db = await open()
+      return deleteFromStoreIfUnchanged(db, collectionStore(collection), records)
     },
     async clearCollection(collection) {
       const db = await open()
@@ -265,6 +286,30 @@ async function deleteFromStore(
   await transactionDone(transaction)
 }
 
+async function deleteFromStoreIfUnchanged(
+  db: IDBDatabase,
+  store: string,
+  expectedRecords: readonly StoredRecord[],
+): Promise<string[]> {
+  const transaction = db.transaction(store, 'readwrite')
+  const objectStore = transaction.objectStore(store)
+  const currentRecords = await Promise.all(
+    expectedRecords.map((record) =>
+      requestToPromise<StoredRecord | undefined>(objectStore.get(record.id)),
+    ),
+  )
+  const deleted: string[] = []
+  for (const [index, expected] of expectedRecords.entries()) {
+    const current = currentRecords[index]
+    if (current && recordsEqual(current, expected)) {
+      objectStore.delete(expected.id)
+      deleted.push(expected.id)
+    }
+  }
+  await transactionDone(transaction)
+  return deleted
+}
+
 async function clearStore(db: IDBDatabase, store: string): Promise<void> {
   const transaction = db.transaction(store, 'readwrite')
   transaction.objectStore(store).clear()
@@ -280,4 +325,8 @@ async function listStore<T>(db: IDBDatabase, store: string): Promise<T[]> {
 
 function clone<T>(value: T): T {
   return value == null ? value : JSON.parse(JSON.stringify(value))
+}
+
+function recordsEqual(left: StoredRecord, right: StoredRecord): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
 }

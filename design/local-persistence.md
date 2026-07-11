@@ -147,6 +147,8 @@ clear local data on logout when appropriate
 
 The framework should support clearing all local namespace data, clearing a collection, and resetting in-memory/local state.
 
+Bounded working sets use explicit collection pruning rather than schema policy or a lifecycle hook. Applications own time windows and dependency rules; the framework protects dirty, pending, rejected, and conflicted records. Pruning compare-and-deletes the observed records atomically, writes persistence before reactive state, and reports concurrent changes as protected. Staged cross-collection pruning may safely over-retain after a crash.
+
 ## Implementation Details
 
 No `_protocolVersion` is needed for now.
@@ -216,4 +218,10 @@ Clearing APIs:
 await vs.clearLocalData();
 await vs.clearCollection(todos);
 await vs.reset();
+```
+
+```ts
+const report = await vs.collections.todos.pruneLocal(candidateIds, {
+  dryRun: true,
+});
 ```

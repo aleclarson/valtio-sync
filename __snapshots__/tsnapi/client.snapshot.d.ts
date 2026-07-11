@@ -71,6 +71,17 @@ export type LocalDataSnapshot = {
   session: JsonRecord;
 };
 export type LocalMigration = (_: LocalDataSnapshot) => LocalDataSnapshot | Promise<LocalDataSnapshot>;
+export type LocalPruneResult = {
+  readonly dryRun: boolean;
+  readonly requested: string[];
+  readonly eligible: string[];
+  readonly evicted: string[];
+  readonly missing: string[];
+  readonly protected: Array<{
+    id: string;
+    reason: 'pending' | 'error' | 'changed';
+  }>;
+};
 export type RejectedSyncOp = {
   mutationId: string;
   collection: string;
@@ -114,6 +125,9 @@ export type SyncedCollection<TRecord extends JsonRecord = JsonRecord> = {
   delete(_: string): void;
   get(_: string): TRecord | undefined;
   list(): TRecord[];
+  pruneLocal(_: readonly string[], _?: {
+    dryRun?: boolean;
+  }): Promise<LocalPruneResult>;
   flush(): Promise<void>;
   sync(): Promise<void>;
 };
@@ -143,6 +157,7 @@ export type SyncStorage = {
   readRecord(_: string, _: string): Promise<StoredRecord | null>;
   writeRecord(_: string, _: StoredRecord): Promise<void>;
   deleteRecord(_: string, _: string): Promise<void>;
+  deleteRecordsIfUnchanged(_: string, _: readonly StoredRecord[]): Promise<string[]>;
   clearCollection(_: string): Promise<void>;
   clearAll(): Promise<void>;
   close?(): void;

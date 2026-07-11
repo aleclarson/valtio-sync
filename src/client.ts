@@ -97,6 +97,19 @@ export type ValtioSyncStatus = {
   lastError: SyncError | null
 }
 
+/** Result of a local-only collection pruning pass. */
+export type LocalPruneResult = {
+  readonly dryRun: boolean
+  readonly requested: string[]
+  readonly eligible: string[]
+  readonly evicted: string[]
+  readonly missing: string[]
+  readonly protected: Array<{
+    id: string
+    reason: 'pending' | 'error' | 'changed'
+  }>
+}
+
 /** Reactive collection facade for reading and mutating synced records. */
 export type SyncedCollection<TRecord extends JsonRecord = JsonRecord> = {
   readonly name: string
@@ -106,6 +119,7 @@ export type SyncedCollection<TRecord extends JsonRecord = JsonRecord> = {
   delete(id: string): void
   get(id: string): TRecord | undefined
   list(): TRecord[]
+  pruneLocal(ids: readonly string[], options?: { dryRun?: boolean }): Promise<LocalPruneResult>
   flush(): Promise<void>
   sync(): Promise<void>
 }
@@ -192,6 +206,11 @@ type ClientInternals = {
   sync(): Promise<void>
   readLocalDataSnapshot(): Promise<LocalDataSnapshot>
   mutateCollection(collection: string, mutation: CollectionMutation): void
+  pruneLocal(
+    collection: string,
+    ids: readonly string[],
+    options?: { dryRun?: boolean },
+  ): Promise<LocalPruneResult>
 }
 
 const clientInternalsKey = Symbol('valtio-sync client internals')
@@ -275,6 +294,7 @@ export function valtioSync<
   let retryTimer: ReturnType<typeof setTimeout> | undefined
   let retryAttempt = 0
   let writeQueue = Promise.resolve()
+  let reconciliationQueue = Promise.resolve()
 
   const internals: ClientInternals = {
     accountKey: String(accountKey),
@@ -293,6 +313,7 @@ export function valtioSync<
     sync: async () => sync(),
     readLocalDataSnapshot: async () => readLocalDataSnapshot(),
     mutateCollection: (collection, mutation) => mutateCollection(collection, mutation),
+    pruneLocal: (collection, ids, pruneOptions) => pruneLocal(collection, ids, pruneOptions),
   }
 
   for (const key of collectionKeys) {
@@ -348,7 +369,7 @@ export function valtioSync<
       if (message.type === 'clear') {
         void resetProxiesToDefaults()
       } else if (message.type === 'collectionChanged' && message.collection) {
-        void hydrateCollection(message.collection)
+        void writeQueue.then(() => hydrateCollection(message.collection!))
       }
     }
   }
@@ -444,6 +465,8 @@ export function valtioSync<
       return
     }
     hydrateCollectionFromRecords(collection, await storage.listRecords(collection))
+    refreshPendingOps(internals)
+    status.dirty = internals.pendingOps.length > 0
   }
 
   function hydrateCollectionFromRecords(collection: string, records: StoredRecord[]) {
@@ -454,6 +477,12 @@ export function valtioSync<
     }
 
     const nextRecords: Record<string, JsonRecord> = {}
+    for (const key of storedRecords.keys()) {
+      if (key.startsWith(`${collection}:`)) {
+        storedRecords.delete(key)
+        recordMeta.delete(key)
+      }
+    }
     for (const record of records) {
       try {
         const parsed = parseRecord(definition, record.data) as JsonRecord
@@ -473,7 +502,9 @@ export function valtioSync<
         })
       }
     }
-    replaceObject(collectionState.records, nextRecords)
+    runWithoutTracking(() => {
+      replaceObject(collectionState.records, nextRecords)
+    })
   }
 
   async function resetProxiesToDefaults() {
@@ -571,7 +602,7 @@ export function valtioSync<
       const syncResponse = parseSyncResponse(await response.json())
       internals.lastSyncResponse = syncResponse
       status.lastError = null
-      await applySyncResponse(syncResponse, request.ops)
+      await enqueueReconciliation(() => applySyncResponse(syncResponse, request.ops))
       accountMeta = {
         ...accountMeta,
         lastServerSeq: syncResponse.serverSeq,
@@ -866,37 +897,120 @@ export function valtioSync<
       return
     }
 
-    const collectionState = collections[collection]
-    if (!collectionState) {
+    if (!collections[collection]) {
       return
     }
 
-    const localIds = new Set(Object.keys(collectionState.records))
-    for (const [key, record] of storedRecords) {
-      if (key.startsWith(`${collection}:`)) {
-        localIds.add(record.id)
+    const candidates: StoredRecord[] = []
+    for (const [key, existing] of storedRecords) {
+      if (!key.startsWith(`${collection}:`) || snapshotIds.has(existing.id)) {
+        continue
       }
+
+      // Snapshot absence is authoritative only for server-clean records.
+      if (getLocalPruneProtection(existing.meta)) {
+        continue
+      }
+      candidates.push(existing)
     }
 
-    for (const id of localIds) {
-      if (snapshotIds.has(id)) {
-        continue
+    await evictObservedRecords(collection, candidates)
+  }
+
+  async function pruneLocal(
+    collection: string,
+    ids: readonly string[],
+    pruneOptions: { dryRun?: boolean } = {},
+  ): Promise<LocalPruneResult> {
+    await ready
+    await flush()
+
+    return enqueueReconciliation(async () => {
+      const collectionState = collections[collection]
+      if (!collectionState) {
+        throw new Error(`Unknown synced collection: ${collection}`)
       }
 
+      const requested = unique([...ids])
+      const candidates: StoredRecord[] = []
+      const missing: string[] = []
+      const protectedRecords: LocalPruneResult['protected'] = []
+
+      for (const id of requested) {
+        const record = storedRecords.get(metaKey(collection, id))
+        if (!record) {
+          missing.push(id)
+          continue
+        }
+
+        const protection = getLocalPruneProtection(record.meta)
+        if (protection) {
+          protectedRecords.push({ id, reason: protection })
+        } else {
+          candidates.push(record)
+        }
+      }
+
+      if (pruneOptions.dryRun) {
+        return {
+          dryRun: true,
+          requested,
+          eligible: candidates.map((record) => record.id),
+          evicted: [],
+          missing,
+          protected: protectedRecords,
+        }
+      }
+
+      const { evicted, changed } = await evictObservedRecords(collection, candidates)
+      for (const id of changed) {
+        protectedRecords.push({ id, reason: 'changed' })
+      }
+
+      return {
+        dryRun: false,
+        requested,
+        eligible: candidates.map((record) => record.id),
+        evicted,
+        missing,
+        protected: protectedRecords,
+      }
+    })
+  }
+
+  async function evictObservedRecords(collection: string, candidates: StoredRecord[]) {
+    const collectionState = collections[collection]
+    if (!collectionState || candidates.length === 0) {
+      return { evicted: [] as string[], changed: [] as string[] }
+    }
+
+    // Another tab may have made a candidate actionable after our view was hydrated. The
+    // storage transaction preserves any record that no longer matches our clean observation.
+    const evicted = await storage.deleteRecordsIfUnchanged(collection, candidates)
+    const evictedSet = new Set(evicted)
+    for (const id of evicted) {
       const key = metaKey(collection, id)
-      const existing = storedRecords.get(key)
-      // Snapshot absence is authoritative only for server-clean records.
-      if (existing?.meta.dirty || existing?.meta.lastError) {
-        continue
-      }
-
       runWithoutTracking(() => {
         delete collectionState.records[id]
       })
       storedRecords.delete(key)
       recordMeta.delete(key)
-      await storage.deleteRecord(collection, id)
     }
+
+    const changed = candidates
+      .filter((record) => !evictedSet.has(record.id))
+      .map((record) => record.id)
+    if (changed.length > 0) {
+      await hydrateCollection(collection)
+    }
+    if (evicted.length > 0) {
+      channel?.postMessage({
+        namespace,
+        type: 'collectionChanged',
+        collection,
+      } satisfies BroadcastMessage)
+    }
+    return { evicted, changed }
   }
 
   function mutateCollection(collection: string, mutation: CollectionMutation) {
@@ -1164,6 +1278,15 @@ export function valtioSync<
         message: error instanceof Error ? error.message : 'Failed to persist local mutation',
       })
     })
+  }
+
+  function enqueueReconciliation<T>(reconcile: () => Promise<T>): Promise<T> {
+    const result = reconciliationQueue.then(reconcile, reconcile)
+    reconciliationQueue = result.then(
+      () => undefined,
+      () => undefined,
+    )
+    return result
   }
 
   function runWithoutTracking<T>(fn: () => T): T {
@@ -1459,6 +1582,9 @@ function makeCollection(
     list() {
       return Object.values(records)
     },
+    pruneLocal(ids, options) {
+      return internals.pruneLocal(name, ids, options)
+    },
     flush: internals.flush,
     sync: internals.sync,
   }
@@ -1594,6 +1720,18 @@ function dirtyMeta(
     touched: nextTouched,
     lastError: undefined,
   }
+}
+
+function getLocalPruneProtection(
+  meta: StoredRecord['meta'],
+): LocalPruneResult['protected'][number]['reason'] | undefined {
+  if (meta.dirty || meta.deleted) {
+    return 'pending'
+  }
+  if (meta.lastError) {
+    return 'error'
+  }
+  return undefined
 }
 
 function pickTouched(record: JsonRecord, touched: string[]): JsonRecord {
