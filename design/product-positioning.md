@@ -5,7 +5,7 @@
 The target developer experience is ordinary Valtio mutation:
 
 ```ts
-todo.title = "New title";
+todo.title = 'New title'
 ```
 
 Behind that mutation, the data should be persisted locally, batched, sent to a remote backend, stored in the app database, available across devices, and restored instantly on reload.
@@ -14,7 +14,7 @@ The clean positioning is:
 
 ```txt
 valtio-sync lets you use Valtio like normal,
-while automatically saving state locally and remotely.
+while automatically saving state locally and syncing it to your backend on your app's schedule.
 ```
 
 Expanded:

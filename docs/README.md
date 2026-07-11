@@ -5,6 +5,7 @@
 Start here:
 
 - [Quickstart](quickstart.md)
+- [Sync Lifecycle](sync-lifecycle.md)
 - [Schemas](schema.md)
 - [Client API](client.md)
 - [Server API](server.md)

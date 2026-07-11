@@ -3,19 +3,19 @@
 Import the browser/client entrypoint:
 
 ```ts
-import { valtioSync } from "valtio-sync/client";
+import { valtioSync } from 'valtio-sync/client'
 ```
 
 Create a client with an endpoint, namespace, and schema:
 
 ```ts
 const sync = valtioSync({
-  endpoint: "/api/sync",
+  endpoint: '/api/sync',
   namespace: `my-app:${user.id}`,
   schema: { account, todos },
-});
+})
 
-await sync.ready;
+await sync.ready
 ```
 
 `namespace` separates local IndexedDB, local storage, session storage, and BroadcastChannel state. Use a stable per-user namespace when multiple users can sign into the same browser.
@@ -38,15 +38,15 @@ The returned object exposes:
 Collection APIs expose:
 
 ```ts
-const todo = sync.todos.create({ id: "todo_1", title: "Ship" });
-sync.todos.update("todo_1", { completed: true });
-sync.todos.records.todo_1.title = "Ship v1";
-sync.todos.delete("todo_1");
+const todo = sync.todos.create({ id: 'todo_1', title: 'Ship' })
+sync.todos.update('todo_1', { completed: true })
+sync.todos.records.todo_1.title = 'Ship v1'
+sync.todos.delete('todo_1')
 
-sync.todos.get("todo_1");
-sync.todos.list();
-await sync.todos.flush();
-await sync.todos.sync();
+sync.todos.get('todo_1')
+sync.todos.list()
+await sync.todos.flush()
+await sync.todos.sync()
 ```
 
 Collection names cannot collide with built-in client properties such as `account`, `device`,
@@ -54,18 +54,23 @@ Collection names cannot collide with built-in client properties such as `account
 
 Direct proxy mutations and collection helper calls both become dirty sync operations. Local writes are batched briefly; call `flush()` before tests or before inspecting `debug.getPendingOps()`.
 
+Local persistence is automatic, but remote sync starts only when the application calls `sync()`.
+Failed network syncs retry automatically; creating dirty state alone does not schedule a remote
+request. See [Sync Lifecycle](sync-lifecycle.md) for the complete timing, retry, and freshness
+model.
+
 ## Bounded Local Replicas
 
 `collection.pruneLocal(ids)` evicts application-selected records from the local cache without creating server delete operations or changing the sync cursor. The client refuses to evict dirty creates, updates, pending deletes, and records with rejection or conflict metadata. There is no force option.
 
 ```ts
-const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000
 const oldOrderIds = sync.orders
   .list()
   .filter((order) => order.orderedAt < cutoff)
-  .map((order) => order.id);
+  .map((order) => order.id)
 
-const report = await sync.orders.pruneLocal(oldOrderIds);
+const report = await sync.orders.pruneLocal(oldOrderIds)
 ```
 
 The report separates `eligible`, `evicted`, `missing`, and `protected` IDs. Pass `{ dryRun: true }` to run the same safety checks without writing.
@@ -73,18 +78,16 @@ The report separates `eligible`, `evicted`, `missing`, and `protected` IDs. Pass
 Retention and relationship policies stay in application code. Prune related collections in dependency order, deriving each stage from records actually retained by the previous stage:
 
 ```ts
-await sync.orders.pruneLocal(oldOrderIds);
+await sync.orders.pruneLocal(oldOrderIds)
 const retainedProductVersionIds = new Set(
   sync.orders.list().flatMap((order) => order.productVersionIds),
-);
+)
 await sync.productVersions.pruneLocal(
   sync.productVersions
     .list()
-    .filter(
-      (version) => !version.current && !retainedProductVersionIds.has(version.id),
-    )
+    .filter((version) => !version.current && !retainedProductVersionIds.has(version.id))
     .map((version) => version.id),
-);
+)
 ```
 
 This preserves dependencies referenced by a record that was protected from pruning. A crash between stages only leaves extra cache data. Persistent storage is updated before reactive state, and compare-and-delete semantics preserve a newer concurrent tab mutation. Initial and stale-cursor authoritative snapshots remain the correctness fallback and may repopulate records still in server scope.
@@ -95,25 +98,25 @@ Use a stable anonymous namespace before signup:
 
 ```ts
 const anonymousSync = valtioSync({
-  endpoint: "/api/sync",
+  endpoint: '/api/sync',
   namespace: `my-app:anon:${anonymousId}`,
   schema: { account, todos },
-});
+})
 ```
 
 After signup succeeds and the request context is authenticated, create the new account client and adopt the anonymous local data:
 
 ```ts
 const userSync = valtioSync({
-  endpoint: "/api/sync",
+  endpoint: '/api/sync',
   namespace: `my-app:user:${user.id}`,
   schema: { account, todos },
-});
+})
 
 await userSync.adoptLocalData(anonymousSync, {
   sync: true,
-  clearSource: "afterSuccessfulSync",
-});
+  clearSource: 'afterSuccessfulSync',
+})
 ```
 
 Adoption is intentionally a new-account flow. The target namespace must not already have synced account state or cached records. Imported collection records become dirty create operations, imported account state becomes a dirty account update, and the normal sync endpoint writes the data under the authenticated server context. Local-only `device` and `session` state are copied by default; pass `copyLocalState: false` or `{ device: true, session: false }` to change that.
@@ -131,12 +134,12 @@ Client options include:
 `debug` is intended for tests and diagnostics:
 
 ```ts
-sync.debug.getStatus();
-sync.debug.getPendingOps();
-sync.debug.getDirtyRecords();
-sync.debug.getRecordMeta(sync.todos, "todo_1");
-sync.debug.getLastSyncRequest();
-sync.debug.getLastSyncResponse();
+sync.debug.getStatus()
+sync.debug.getPendingOps()
+sync.debug.getDirtyRecords()
+sync.debug.getRecordMeta(sync.todos, 'todo_1')
+sync.debug.getLastSyncRequest()
+sync.debug.getLastSyncResponse()
 ```
 
 Do not store secrets in synced records, `device`, or `session`. Browser storage and IndexedDB are persistence mechanisms, not secure storage.
