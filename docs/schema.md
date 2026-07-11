@@ -21,6 +21,17 @@ const todos = defineCollection({
 });
 
 type Todo = infer<typeof todos>;
+type TodoFromZod = z.infer<typeof todos.recordSchema>; // Same as Todo
+```
+
+Each definition exposes its effective strict Zod schema as `recordSchema`. This is the same
+schema valtio-sync uses for cache hydration, local mutations, inbound changes, and outbound
+validation, including field defaults and transforms. This makes the definition the source of
+truth without requiring a separate Zod object:
+
+```ts
+export const Food = foods.recordSchema;
+export type Food = infer<typeof foods>;
 ```
 
 Use exactly one account definition in each sync schema:

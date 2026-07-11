@@ -88,9 +88,10 @@ test('server-only fields are absent from runtime sync schemas', () => {
   })
 
   expect(Object.keys(definition.fields)).toEqual(['id'])
-  expect(Object.keys(definition.schema.shape)).toEqual(['id'])
-  expect(definition.schema.parse({ id: 'todo_1' })).toEqual({ id: 'todo_1' })
-  expect(() => definition.schema.parse({ id: 'todo_1', userId: 'user_1' })).toThrow()
+  expect(definition.recordSchema).toBe(definition.schema)
+  expect(Object.keys(definition.recordSchema.shape)).toEqual(['id'])
+  expect(definition.recordSchema.parse({ id: 'todo_1' })).toEqual({ id: 'todo_1' })
+  expect(() => definition.recordSchema.parse({ id: 'todo_1', userId: 'user_1' })).toThrow()
   expect(() => parsePatch(definition, { serverVersion: 2 })).toThrow('Unknown patch field')
 })
 

@@ -66,6 +66,9 @@ test('server-only columns are omitted from inferred sync records', () => {
   })
 
   expectTypeOf<InferSync<typeof definition>>().toEqualTypeOf<{ id: string }>()
+  expectTypeOf<InferSync<typeof definition>>().toEqualTypeOf<
+    z.infer<typeof definition.recordSchema>
+  >()
 })
 
 test('server-only keys must exist in the selected Drizzle row', () => {

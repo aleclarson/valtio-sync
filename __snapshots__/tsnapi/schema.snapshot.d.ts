@@ -5,12 +5,14 @@
 export type AccountDefinition<TFields extends FieldMap = FieldMap> = {
   readonly kind: 'account';
   readonly fields: TFields;
+  readonly recordSchema: z.ZodObject<TFields>;
   readonly schema: z.ZodObject<TFields>;
 };
 export type AccountKey<TSchema extends SyncSchema> = { [K in keyof TSchema]: TSchema[K] extends AccountDefinition ? K : never }[keyof TSchema];
 export type CollectionDefinition<TFields extends FieldMap = FieldMap> = {
   readonly kind: 'collection';
   readonly fields: TFields;
+  readonly recordSchema: z.ZodObject<TFields>;
   readonly schema: z.ZodObject<TFields>;
 };
 export type CollectionKey<TSchema extends SyncSchema> = { [K in keyof TSchema]: TSchema[K] extends CollectionDefinition ? K : never }[keyof TSchema];

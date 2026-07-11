@@ -18,9 +18,8 @@ export type InferFields<TFields extends FieldMap> = {
 }
 
 /** Infer the parsed record type from an account or collection definition. */
-export type infer<TDefinition> = TDefinition extends SchemaDefinition<infer TFields>
-  ? InferFields<TFields>
-  : never
+export type infer<TDefinition> =
+  TDefinition extends SchemaDefinition<infer TFields> ? InferFields<TFields> : never
 
 /** Discriminator for account and collection schema definitions. */
 export type SchemaKind = 'account' | 'collection'
@@ -29,6 +28,8 @@ export type SchemaKind = 'account' | 'collection'
 export type AccountDefinition<TFields extends FieldMap = FieldMap> = {
   readonly kind: 'account'
   readonly fields: TFields
+  readonly recordSchema: z.ZodObject<TFields>
+  /** @deprecated Use `recordSchema` for the effective synced record schema. */
   readonly schema: z.ZodObject<TFields>
 }
 
@@ -36,6 +37,8 @@ export type AccountDefinition<TFields extends FieldMap = FieldMap> = {
 export type CollectionDefinition<TFields extends FieldMap = FieldMap> = {
   readonly kind: 'collection'
   readonly fields: TFields
+  readonly recordSchema: z.ZodObject<TFields>
+  /** @deprecated Use `recordSchema` for the effective synced record schema. */
   readonly schema: z.ZodObject<TFields>
 }
 
@@ -61,10 +64,12 @@ export type CollectionKey<TSchema extends SyncSchema> = {
 export function defineAccount<const TFields extends FieldMap>(options: {
   fields: TFields
 }): AccountDefinition<TFields> {
+  const recordSchema = createRecordSchema(options)
   return {
     kind: 'account',
     fields: options.fields,
-    schema: z.object(options.fields).strict(),
+    recordSchema,
+    schema: recordSchema,
   }
 }
 
@@ -72,11 +77,19 @@ export function defineAccount<const TFields extends FieldMap>(options: {
 export function defineCollection<const TFields extends FieldMap>(options: {
   fields: TFields
 }): CollectionDefinition<TFields> {
+  const recordSchema = createRecordSchema(options)
   return {
     kind: 'collection',
     fields: options.fields,
-    schema: z.object(options.fields).strict(),
+    recordSchema,
+    schema: recordSchema,
   }
+}
+
+function createRecordSchema<TFields extends FieldMap>(options: {
+  fields: TFields
+}): z.ZodObject<TFields> {
+  return z.object(options.fields).strict()
 }
 
 /** Create a strict Zod object schema for client-only device or session state. */
@@ -93,7 +106,7 @@ export function getDefaults<TFields extends FieldMap>(
   const defaults: Record<string, unknown> = {}
 
   for (const key of Object.keys(definition.fields)) {
-    const result = definition.schema.shape[key]?.safeParse(undefined)
+    const result = definition.recordSchema.shape[key]?.safeParse(undefined)
     if (result?.success) {
       defaults[key] = result.data
     }
@@ -107,7 +120,7 @@ export function parseRecord<TFields extends FieldMap>(
   definition: SchemaDefinition<TFields>,
   value: unknown,
 ): InferFields<TFields> {
-  const parsed = definition.schema.parse(value)
+  const parsed = definition.recordSchema.parse(value)
   assertJsonRecord(parsed, 'Synced records must be JSON-serializable')
   return parsed as InferFields<TFields>
 }
@@ -157,12 +170,8 @@ export function assertJsonRecord(
 }
 
 /** Return the single account key or throw when the schema does not define exactly one. */
-export function getAccountKey<TSchema extends SyncSchema>(
-  schema: TSchema,
-): AccountKey<TSchema> {
-  const accountKeys = Object.keys(schema).filter(
-    (key) => schema[key]?.kind === 'account',
-  )
+export function getAccountKey<TSchema extends SyncSchema>(schema: TSchema): AccountKey<TSchema> {
+  const accountKeys = Object.keys(schema).filter((key) => schema[key]?.kind === 'account')
 
   if (accountKeys.length !== 1) {
     throw new Error('valtio-sync requires exactly one account definition')
@@ -175,9 +184,9 @@ export function getAccountKey<TSchema extends SyncSchema>(
 export function getCollectionKeys<TSchema extends SyncSchema>(
   schema: TSchema,
 ): Array<CollectionKey<TSchema>> {
-  return Object.keys(schema).filter(
-    (key) => schema[key]?.kind === 'collection',
-  ) as Array<CollectionKey<TSchema>>
+  return Object.keys(schema).filter((key) => schema[key]?.kind === 'collection') as Array<
+    CollectionKey<TSchema>
+  >
 }
 
 /** Look up a schema definition by wire collection name. */

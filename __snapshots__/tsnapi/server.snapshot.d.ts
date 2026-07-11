@@ -12,6 +12,7 @@ export type AcceptedSyncOp = {
 export type AccountDefinition<TFields extends FieldMap = FieldMap> = {
   readonly kind: 'account';
   readonly fields: TFields;
+  readonly recordSchema: z.ZodObject<TFields>;
   readonly schema: z.ZodObject<TFields>;
 };
 export type AccountServerHandlers<TContext> = {
@@ -40,6 +41,7 @@ export type CollectionChangesMode = 'changes' | 'snapshot';
 export type CollectionDefinition<TFields extends FieldMap = FieldMap> = {
   readonly kind: 'collection';
   readonly fields: TFields;
+  readonly recordSchema: z.ZodObject<TFields>;
   readonly schema: z.ZodObject<TFields>;
 };
 export type CollectionServerHandlers<TContext> = {
