@@ -1,5 +1,6 @@
 import type { JsonRecord, SyncOp } from './protocol.js'
 import * as schema from './schema.js'
+import { z } from 'zod'
 import type {
   AccountServerHandlers,
   CollectionServerHandlers,
@@ -9,6 +10,7 @@ import type {
 } from './server.js'
 
 declare const drizzleTypeMarker: unique symbol
+const serverOnlyMarker: unique symbol = Symbol('valtio-sync.serverOnly')
 
 /** Minimal Drizzle table shape used to read a table's selected row type. */
 export type DrizzleSelectable = {
@@ -20,10 +22,22 @@ export type DrizzleType<TTable extends DrizzleSelectable> = {
   readonly [drizzleTypeMarker]: TTable
 }
 
+/** Branded sentinel for a selected Drizzle column that is excluded from sync records. */
+export type ServerOnly = z.ZodNever & {
+  readonly [serverOnlyMarker]: true
+}
+
+type DrizzleField = schema.FieldSchema | ServerOnly
+type DrizzleFieldMap = Record<string, DrizzleField>
+
+type SyncedFields<TFields extends DrizzleFieldMap> = {
+  [K in keyof TFields as TFields[K] extends ServerOnly ? never : K]: Exclude<TFields[K], ServerOnly>
+}
+
 /** Options for defining a schema entry whose fields must match a Drizzle row type. */
 export type DrizzleDefinitionOptions<
   TTable extends DrizzleSelectable,
-  TFields extends schema.FieldMap,
+  TFields extends DrizzleFieldMap,
 > = {
   readonly dbType: DrizzleType<TTable>
   readonly fields: DrizzleCompatibleFields<TTable['$inferSelect'], TFields>
@@ -31,15 +45,19 @@ export type DrizzleDefinitionOptions<
 
 type DrizzleCompatibleFields<
   TRow extends Record<string, unknown>,
-  TFields extends schema.FieldMap,
+  TFields extends DrizzleFieldMap,
 > = TFields & {
   [K in Exclude<keyof TFields, keyof TRow>]: never
 } & {
-  [K in Exclude<keyof TRow, keyof TFields>]-?: schema.FieldSchema
+  [K in Exclude<keyof TRow, keyof TFields>]-?: DrizzleField
 } & {
-  [K in keyof TFields & keyof TRow]: schema.InferFields<TFields>[K] extends TRow[K]
+  [K in keyof TFields & keyof TRow]: TFields[K] extends ServerOnly
     ? TFields[K]
-    : never
+    : TFields[K] extends schema.FieldSchema
+      ? z.output<TFields[K]> extends TRow[K]
+        ? TFields[K]
+        : never
+      : never
 }
 
 /** Capture a Drizzle table type for compile-time field compatibility checks. */
@@ -47,27 +65,40 @@ export function $type<TTable extends DrizzleSelectable>(): DrizzleType<TTable> {
   return {} as DrizzleType<TTable>
 }
 
+/** Mark a selected Drizzle column as persistence-only and exclude it from sync. */
+export function serverOnly(): ServerOnly {
+  const sentinel = z.never() as ServerOnly
+  Object.defineProperty(sentinel, serverOnlyMarker, { value: true })
+  return sentinel
+}
+
+function syncedFields<TFields extends DrizzleFieldMap>(fields: TFields): SyncedFields<TFields> {
+  return Object.fromEntries(
+    Object.entries(fields).filter(([, field]) => !(serverOnlyMarker in field)),
+  ) as SyncedFields<TFields>
+}
+
 /** Define a singleton account state whose fields are checked against a Drizzle table row. */
 export function defineAccount<
   TTable extends DrizzleSelectable,
-  const TFields extends schema.FieldMap,
+  const TFields extends DrizzleFieldMap,
 >(
   options: DrizzleDefinitionOptions<TTable, TFields>,
-): schema.AccountDefinition<TFields> {
+): schema.AccountDefinition<SyncedFields<TFields>> {
   return schema.defineAccount({
-    fields: options.fields,
+    fields: syncedFields<TFields>(options.fields),
   })
 }
 
 /** Define a collection whose fields are checked against a Drizzle table row. */
 export function defineCollection<
   TTable extends DrizzleSelectable,
-  const TFields extends schema.FieldMap,
+  const TFields extends DrizzleFieldMap,
 >(
   options: DrizzleDefinitionOptions<TTable, TFields>,
-): schema.CollectionDefinition<TFields> {
+): schema.CollectionDefinition<SyncedFields<TFields>> {
   return schema.defineCollection({
-    fields: options.fields,
+    fields: syncedFields<TFields>(options.fields),
   })
 }
 

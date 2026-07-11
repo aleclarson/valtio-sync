@@ -19,7 +19,7 @@ The Drizzle entrypoint provides schema definition wrappers that check your Zod
 field map against a Drizzle table's selected row shape:
 
 ```ts
-import { $type, defineAccount, defineCollection } from "valtio-sync/drizzle";
+import { $type, defineAccount, defineCollection, serverOnly } from "valtio-sync/drizzle";
 import { z } from "zod";
 import { accountTable, todosTable } from "./db/schema";
 
@@ -33,12 +33,20 @@ export const account = defineAccount({
 export const todos = defineCollection({
   dbType: $type<typeof todosTable>(),
   fields: {
+    userId: serverOnly(),
+    serverVersion: serverOnly(),
     id: z.string(),
     title: z.string().default(""),
     completed: z.boolean().default(false),
   },
 });
 ```
+
+Use `serverOnly()` for persistence or server-controlled selected columns that must never be
+part of the synced record. Every key in the table's `$inferSelect` must still appear in
+`fields`, but sentinel fields are omitted from the inferred record type and from runtime
+validation, serialization, and patch handling. The sentinel is branded, so an arbitrary
+`z.never()` remains a normal field schema rather than being treated as server-only.
 
 The `dbType` marker is compile-time only. At runtime the wrappers create the
 same schema definitions as `valtio-sync/schema`.

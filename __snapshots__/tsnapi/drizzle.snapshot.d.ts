@@ -22,7 +22,7 @@ export type DrizzleCreateInput<TContext, TTransaction extends DrizzleLikeTransac
 }>, TTransaction> & {
   record: JsonRecord;
 };
-export type DrizzleDefinitionOptions<TTable extends DrizzleSelectable, TFields extends FieldMap> = {
+export type DrizzleDefinitionOptions<TTable extends DrizzleSelectable, TFields extends DrizzleFieldMap> = {
   readonly dbType: DrizzleType<TTable>;
   readonly fields: DrizzleCompatibleFields<TTable['$inferSelect'], TFields>;
 };
@@ -79,11 +79,15 @@ export type DrizzleUpdateInput<TContext, TTransaction extends DrizzleLikeTransac
 }>, TTransaction> & {
   patch: JsonRecord;
 };
+export type ServerOnly = z.ZodNever & {
+  readonly [serverOnlyMarker]: true;
+};
 // #endregion
 
 // #region Functions
 export declare function $type<TTable extends DrizzleSelectable>(): DrizzleType<TTable>;
 export declare function applyOpsWithDrizzle<TContext, TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction>(_: ApplyOpsWithDrizzleOptions<TContext, TTransaction>): ServerHandlers<TContext>;
-export declare function defineAccount<TTable extends DrizzleSelectable, const TFields extends FieldMap>(_: DrizzleDefinitionOptions<TTable, TFields>): AccountDefinition<TFields>;
-export declare function defineCollection<TTable extends DrizzleSelectable, const TFields extends FieldMap>(_: DrizzleDefinitionOptions<TTable, TFields>): CollectionDefinition<TFields>;
+export declare function defineAccount<TTable extends DrizzleSelectable, const TFields extends DrizzleFieldMap>(_: DrizzleDefinitionOptions<TTable, TFields>): AccountDefinition<SyncedFields<TFields>>;
+export declare function defineCollection<TTable extends DrizzleSelectable, const TFields extends DrizzleFieldMap>(_: DrizzleDefinitionOptions<TTable, TFields>): CollectionDefinition<SyncedFields<TFields>>;
+export declare function serverOnly(): ServerOnly;
 // #endregion

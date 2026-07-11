@@ -6,4 +6,5 @@ export function $type() {}
 export function applyOpsWithDrizzle(_) {}
 export function defineAccount(_) {}
 export function defineCollection(_) {}
+export function serverOnly() {}
 // #endregion

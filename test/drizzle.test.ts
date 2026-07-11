@@ -4,9 +4,10 @@ import {
   applyOpsWithDrizzle,
   defineAccount as defineDrizzleAccount,
   defineCollection as defineDrizzleCollection,
+  serverOnly,
   type DrizzleLikeDatabase,
 } from '../src/drizzle.js'
-import { defineAccount, defineCollection } from '../src/schema.js'
+import { defineAccount, defineCollection, parsePatch } from '../src/schema.js'
 import { valtioSync } from '../src/server.js'
 
 const account = defineAccount({
@@ -72,6 +73,38 @@ test('drizzle schema wrappers create normal schema definitions', () => {
     completed: false,
     note: null,
   })
+})
+
+test('server-only fields are absent from runtime sync schemas', () => {
+  const definition = defineDrizzleCollection({
+    dbType: $type<{
+      readonly $inferSelect: { id: string; userId: string; serverVersion: number }
+    }>(),
+    fields: {
+      id: z.string(),
+      userId: serverOnly(),
+      serverVersion: serverOnly(),
+    },
+  })
+
+  expect(Object.keys(definition.fields)).toEqual(['id'])
+  expect(Object.keys(definition.schema.shape)).toEqual(['id'])
+  expect(definition.schema.parse({ id: 'todo_1' })).toEqual({ id: 'todo_1' })
+  expect(() => definition.schema.parse({ id: 'todo_1', userId: 'user_1' })).toThrow()
+  expect(() => parsePatch(definition, { serverVersion: 2 })).toThrow('Unknown patch field')
+})
+
+test('an ordinary z.never field is not treated as server-only', () => {
+  const definition = defineDrizzleCollection({
+    dbType: $type<{ readonly $inferSelect: { id: string; impossible: string } }>(),
+    fields: {
+      id: z.string(),
+      impossible: z.never(),
+    },
+  })
+
+  expect(Object.keys(definition.fields)).toEqual(['id', 'impossible'])
+  expect(() => definition.schema.parse({ id: 'todo_1', impossible: 'value' })).toThrow()
 })
 
 test('drizzle helper wraps mutations in a transaction and writes sync events', async () => {
