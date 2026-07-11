@@ -58,7 +58,7 @@
   "devDependencies": {
     "@types/node": "^26.0.1",
     "drizzle-orm": "1.0.0-rc.4",
-    "lildocs": "^0.1.0",
+    "lildocs": "^0.1.20",
     "oxfmt": "^0.56.0",
     "oxlint": "^1.71.0",
     "radashi": "^12.9.1",
