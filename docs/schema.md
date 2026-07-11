@@ -40,15 +40,15 @@ the same record and issue context as Zod's `superRefine`:
 ```ts
 const account = defineAccount({
   fields: {
-    maxPinnedItems: z.number().int().nonnegative(),
-    pinnedItemIds: z.array(z.string()),
+    maxPinnedTodos: z.number().int().nonnegative(),
+    pinnedTodoIds: z.array(z.string()),
   },
   refine: (record, ctx) => {
-    if (record.pinnedItemIds.length > record.maxPinnedItems) {
+    if (record.pinnedTodoIds.length > record.maxPinnedTodos) {
       ctx.addIssue({
         code: "custom",
-        path: ["pinnedItemIds"],
-        message: "Pinned items exceed the configured limit",
+        path: ["pinnedTodoIds"],
+        message: "Pinned todos exceed the configured limit",
       });
     }
   },

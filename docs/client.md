@@ -57,27 +57,29 @@ Direct proxy mutations and collection helper calls both become dirty sync operat
 
 ```ts
 const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
-const oldEntryIds = sync.collections.entries
+const oldOrderIds = sync.collections.orders
   .list()
-  .filter((entry) => entry.occurredAt < cutoff)
-  .map((entry) => entry.id);
+  .filter((order) => order.orderedAt < cutoff)
+  .map((order) => order.id);
 
-const report = await sync.collections.entries.pruneLocal(oldEntryIds);
+const report = await sync.collections.orders.pruneLocal(oldOrderIds);
 ```
 
 The report separates `eligible`, `evicted`, `missing`, and `protected` IDs. Pass `{ dryRun: true }` to run the same safety checks without writing.
 
-Retention and relationship policy stays in application code. Prune related collections in dependency order, deriving each stage from records actually retained by the previous stage:
+Retention and relationship policies stay in application code. Prune related collections in dependency order, deriving each stage from records actually retained by the previous stage:
 
 ```ts
-await sync.collections.entries.pruneLocal(oldEntryIds);
-const retainedVersionIds = new Set(
-  sync.collections.entries.list().map((entry) => entry.versionId),
+await sync.collections.orders.pruneLocal(oldOrderIds);
+const retainedProductVersionIds = new Set(
+  sync.collections.orders.list().flatMap((order) => order.productVersionIds),
 );
-await sync.collections.versions.pruneLocal(
-  sync.collections.versions
+await sync.collections.productVersions.pruneLocal(
+  sync.collections.productVersions
     .list()
-    .filter((version) => !version.current && !retainedVersionIds.has(version.id))
+    .filter(
+      (version) => !version.current && !retainedProductVersionIds.has(version.id),
+    )
     .map((version) => version.id),
 );
 ```
