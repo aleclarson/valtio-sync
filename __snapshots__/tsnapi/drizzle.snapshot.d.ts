@@ -25,6 +25,7 @@ export type DrizzleCreateInput<TContext, TTransaction extends DrizzleLikeTransac
 export type DrizzleDefinitionOptions<TTable extends DrizzleSelectable, TFields extends DrizzleFieldMap> = {
   readonly dbType: DrizzleType<TTable>;
   readonly fields: DrizzleCompatibleFields<TTable['$inferSelect'], TFields>;
+  readonly refine?: RecordRefinement<SyncedFields<TFields>>;
 };
 export type DrizzleDeleteInput<TContext, TTransaction extends DrizzleLikeTransaction = DrizzleLikeTransaction> = DrizzleMutationInput<TContext, Extract<SyncOp, {
   type: 'delete';

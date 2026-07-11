@@ -44,3 +44,29 @@ test('recordSchema is the effective strict schema with defaults', () => {
   expect(() => foods.recordSchema.parse({ id: 'food_1', name: 'Oats', extra: true })).toThrow()
   expectTypeOf<InferSync<typeof foods>>().toEqualTypeOf<z.infer<typeof foods.recordSchema>>()
 })
+
+test('definitions support cross-field record refinement', () => {
+  const account = defineAccount({
+    fields: {
+      mealsPerDay: z.number().int().positive(),
+      meals: z.array(z.string()),
+    },
+    refine: (record, ctx) => {
+      if (record.meals.length !== record.mealsPerDay) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['meals'],
+          message: 'Meals must match mealsPerDay',
+        })
+      }
+    },
+  })
+
+  expect(parseRecord(account, { mealsPerDay: 2, meals: ['breakfast', 'dinner'] })).toEqual({
+    mealsPerDay: 2,
+    meals: ['breakfast', 'dinner'],
+  })
+  expect(() => parseRecord(account, { mealsPerDay: 2, meals: ['breakfast'] })).toThrow(
+    'Meals must match mealsPerDay',
+  )
+})

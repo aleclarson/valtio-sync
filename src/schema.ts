@@ -17,6 +17,17 @@ export type InferFields<TFields extends FieldMap> = {
   -readonly [K in keyof TFields]: z.output<TFields[K]>
 }
 
+/** Record-level validation callback for invariants involving multiple fields. */
+export type RecordRefinement<TFields extends FieldMap> = Parameters<
+  z.ZodObject<TFields>['superRefine']
+>[0]
+
+/** Options shared by account and collection definitions. */
+export type DefinitionOptions<TFields extends FieldMap> = {
+  fields: TFields
+  refine?: RecordRefinement<TFields>
+}
+
 /** Infer the parsed record type from an account or collection definition. */
 export type infer<TDefinition> =
   TDefinition extends SchemaDefinition<infer TFields> ? InferFields<TFields> : never
@@ -61,9 +72,9 @@ export type CollectionKey<TSchema extends SyncSchema> = {
 }[keyof TSchema]
 
 /** Define the singleton account portion of a sync schema. */
-export function defineAccount<const TFields extends FieldMap>(options: {
-  fields: TFields
-}): AccountDefinition<TFields> {
+export function defineAccount<const TFields extends FieldMap>(
+  options: DefinitionOptions<TFields>,
+): AccountDefinition<TFields> {
   const recordSchema = createRecordSchema(options)
   return {
     kind: 'account',
@@ -74,9 +85,9 @@ export function defineAccount<const TFields extends FieldMap>(options: {
 }
 
 /** Define a record collection in a sync schema. */
-export function defineCollection<const TFields extends FieldMap>(options: {
-  fields: TFields
-}): CollectionDefinition<TFields> {
+export function defineCollection<const TFields extends FieldMap>(
+  options: DefinitionOptions<TFields>,
+): CollectionDefinition<TFields> {
   const recordSchema = createRecordSchema(options)
   return {
     kind: 'collection',
@@ -86,10 +97,11 @@ export function defineCollection<const TFields extends FieldMap>(options: {
   }
 }
 
-function createRecordSchema<TFields extends FieldMap>(options: {
-  fields: TFields
-}): z.ZodObject<TFields> {
-  return z.object(options.fields).strict()
+function createRecordSchema<TFields extends FieldMap>(
+  options: DefinitionOptions<TFields>,
+): z.ZodObject<TFields> {
+  const recordSchema = z.object(options.fields).strict()
+  return options.refine ? recordSchema.superRefine(options.refine) : recordSchema
 }
 
 /** Create a strict Zod object schema for client-only device or session state. */

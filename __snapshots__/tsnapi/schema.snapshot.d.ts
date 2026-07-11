@@ -16,9 +16,14 @@ export type CollectionDefinition<TFields extends FieldMap = FieldMap> = {
   readonly schema: z.ZodObject<TFields>;
 };
 export type CollectionKey<TSchema extends SyncSchema> = { [K in keyof TSchema]: TSchema[K] extends CollectionDefinition ? K : never }[keyof TSchema];
+export type DefinitionOptions<TFields extends FieldMap> = {
+  fields: TFields;
+  refine?: RecordRefinement<TFields>;
+};
 export type FieldMap = Record<string, FieldSchema>;
 export type FieldSchema = z.ZodType<unknown>;
 export type InferFields<TFields extends FieldMap> = { -readonly [K in keyof TFields]: z.output<TFields[K]> };
+export type RecordRefinement<TFields extends FieldMap> = Parameters<z.ZodObject<TFields>['superRefine']>[0];
 export type SchemaDefinition<TFields extends FieldMap = FieldMap> = AccountDefinition<TFields> | CollectionDefinition<TFields>;
 export type SchemaKind = 'account' | 'collection';
 export type SyncSchema = Record<string, SchemaDefinition>;
@@ -26,12 +31,8 @@ export type SyncSchema = Record<string, SchemaDefinition>;
 
 // #region Functions
 export declare function assertJsonRecord(_: unknown, _?: string): asserts value is JsonRecord;
-export declare function defineAccount<const TFields extends FieldMap>(_: {
-  fields: TFields;
-}): AccountDefinition<TFields>;
-export declare function defineCollection<const TFields extends FieldMap>(_: {
-  fields: TFields;
-}): CollectionDefinition<TFields>;
+export declare function defineAccount<const TFields extends FieldMap>(_: DefinitionOptions<TFields>): AccountDefinition<TFields>;
+export declare function defineCollection<const TFields extends FieldMap>(_: DefinitionOptions<TFields>): CollectionDefinition<TFields>;
 export declare function defineLocalState<const TFields extends FieldMap>(_: TFields): z.ZodObject<TFields>;
 export declare function getAccountKey<TSchema extends SyncSchema>(_: TSchema): AccountKey<TSchema>;
 export declare function getCollectionDefinition(_: SyncSchema, _: string): SchemaDefinition | undefined;

@@ -95,6 +95,32 @@ test('server-only fields are absent from runtime sync schemas', () => {
   expect(() => parsePatch(definition, { serverVersion: 2 })).toThrow('Unknown patch field')
 })
 
+test('drizzle definitions refine only the synced record', () => {
+  const definition = defineDrizzleAccount({
+    dbType: $type<{
+      readonly $inferSelect: { userId: string; mealsPerDay: number; meals: string[] }
+    }>(),
+    fields: {
+      userId: serverOnly(),
+      mealsPerDay: z.number().int().positive(),
+      meals: z.array(z.string()),
+    },
+    refine: (record, ctx) => {
+      if (record.meals.length !== record.mealsPerDay) {
+        ctx.addIssue({ code: 'custom', path: ['meals'], message: 'Meal count mismatch' })
+      }
+    },
+  })
+
+  expect(definition.recordSchema.parse({ mealsPerDay: 1, meals: ['breakfast'] })).toEqual({
+    mealsPerDay: 1,
+    meals: ['breakfast'],
+  })
+  expect(() => definition.recordSchema.parse({ mealsPerDay: 2, meals: ['breakfast'] })).toThrow(
+    'Meal count mismatch',
+  )
+})
+
 test('an ordinary z.never field is not treated as server-only', () => {
   const definition = defineDrizzleCollection({
     dbType: $type<{ readonly $inferSelect: { id: string; impossible: string } }>(),

@@ -101,12 +101,8 @@ export type UpdateSyncOp = {
 
 // #region Functions
 export declare function assertJsonRecord(_: unknown, _?: string): asserts value is JsonRecord;
-export declare function defineAccount<const TFields extends FieldMap>(_: {
-  fields: TFields;
-}): AccountDefinition<TFields>;
-export declare function defineCollection<const TFields extends FieldMap>(_: {
-  fields: TFields;
-}): CollectionDefinition<TFields>;
+export declare function defineAccount<const TFields extends FieldMap>(_: DefinitionOptions<TFields>): AccountDefinition<TFields>;
+export declare function defineCollection<const TFields extends FieldMap>(_: DefinitionOptions<TFields>): CollectionDefinition<TFields>;
 export declare function defineLocalState<const TFields extends FieldMap>(_: TFields): z.ZodObject<TFields>;
 export declare function getAccountKey<TSchema extends SyncSchema>(_: TSchema): AccountKey<TSchema>;
 export declare function getCollectionDefinition(_: SyncSchema, _: string): SchemaDefinition | undefined;

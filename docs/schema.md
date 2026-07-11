@@ -34,6 +34,27 @@ export const Food = foods.recordSchema;
 export type Food = infer<typeof foods>;
 ```
 
+Use the definition-level `refine` callback for invariants involving multiple fields. It has
+the same record and issue context as Zod's `superRefine`:
+
+```ts
+const account = defineAccount({
+  fields: {
+    mealsPerDay: z.number().int().positive(),
+    meals: z.array(z.string()),
+  },
+  refine: (record, ctx) => {
+    if (record.meals.length !== record.mealsPerDay) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["meals"],
+        message: "Meals must match mealsPerDay",
+      });
+    }
+  },
+});
+```
+
 Use exactly one account definition in each sync schema:
 
 ```ts

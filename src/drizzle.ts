@@ -41,6 +41,7 @@ export type DrizzleDefinitionOptions<
 > = {
   readonly dbType: DrizzleType<TTable>
   readonly fields: DrizzleCompatibleFields<TTable['$inferSelect'], TFields>
+  readonly refine?: schema.RecordRefinement<SyncedFields<TFields>>
 }
 
 type DrizzleCompatibleFields<
@@ -87,6 +88,7 @@ export function defineAccount<
 ): schema.AccountDefinition<SyncedFields<TFields>> {
   return schema.defineAccount({
     fields: syncedFields<TFields>(options.fields),
+    refine: options.refine,
   })
 }
 
@@ -99,6 +101,7 @@ export function defineCollection<
 ): schema.CollectionDefinition<SyncedFields<TFields>> {
   return schema.defineCollection({
     fields: syncedFields<TFields>(options.fields),
+    refine: options.refine,
   })
 }
 

@@ -52,7 +52,7 @@ part of the synced record. Every key in the table's `$inferSelect` must still ap
 validation, serialization, and patch handling. The sentinel is branded, so an arbitrary
 `z.never()` remains a normal field schema rather than being treated as server-only.
 `recordSchema` is the effective strict synced-record schema, so it excludes `serverOnly()`
-columns while retaining field defaults and transforms.
+columns while retaining field defaults, transforms, and any definition-level `refine` callback.
 
 The `dbType` marker is compile-time only. At runtime the wrappers create the
 same schema definitions as `valtio-sync/schema`.
