@@ -30,8 +30,8 @@ validation, including field defaults and transforms. This makes the definition t
 truth without requiring a separate Zod object:
 
 ```ts
-export const Food = foods.recordSchema;
-export type Food = infer<typeof foods>;
+export const TodoRecord = todos.recordSchema;
+export type TodoRecord = infer<typeof todos>;
 ```
 
 Use the definition-level `refine` callback for invariants involving multiple fields. It has
@@ -40,15 +40,15 @@ the same record and issue context as Zod's `superRefine`:
 ```ts
 const account = defineAccount({
   fields: {
-    mealsPerDay: z.number().int().positive(),
-    meals: z.array(z.string()),
+    maxPinnedItems: z.number().int().nonnegative(),
+    pinnedItemIds: z.array(z.string()),
   },
   refine: (record, ctx) => {
-    if (record.meals.length !== record.mealsPerDay) {
+    if (record.pinnedItemIds.length > record.maxPinnedItems) {
       ctx.addIssue({
         code: "custom",
-        path: ["meals"],
-        message: "Meals must match mealsPerDay",
+        path: ["pinnedItemIds"],
+        message: "Pinned items exceed the configured limit",
       });
     }
   },

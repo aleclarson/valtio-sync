@@ -57,12 +57,12 @@ Direct proxy mutations and collection helper calls both become dirty sync operat
 
 ```ts
 const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
-const oldMealIds = sync.collections.meals
+const oldEntryIds = sync.collections.entries
   .list()
-  .filter((meal) => meal.occurredAt < cutoff)
-  .map((meal) => meal.id);
+  .filter((entry) => entry.occurredAt < cutoff)
+  .map((entry) => entry.id);
 
-const report = await sync.collections.meals.pruneLocal(oldMealIds);
+const report = await sync.collections.entries.pruneLocal(oldEntryIds);
 ```
 
 The report separates `eligible`, `evicted`, `missing`, and `protected` IDs. Pass `{ dryRun: true }` to run the same safety checks without writing.
@@ -70,15 +70,15 @@ The report separates `eligible`, `evicted`, `missing`, and `protected` IDs. Pass
 Retention and relationship policy stays in application code. Prune related collections in dependency order, deriving each stage from records actually retained by the previous stage:
 
 ```ts
-await sync.collections.meals.pruneLocal(oldMealIds);
-const retainedFoodVersions = new Set(
-  sync.collections.meals.list().map((meal) => meal.foodVersionId),
+await sync.collections.entries.pruneLocal(oldEntryIds);
+const retainedVersionIds = new Set(
+  sync.collections.entries.list().map((entry) => entry.versionId),
 );
-await sync.collections.foodVersions.pruneLocal(
-  sync.collections.foodVersions
+await sync.collections.versions.pruneLocal(
+  sync.collections.versions
     .list()
-    .filter((food) => !food.current && !retainedFoodVersions.has(food.id))
-    .map((food) => food.id),
+    .filter((version) => !version.current && !retainedVersionIds.has(version.id))
+    .map((version) => version.id),
 );
 ```
 
