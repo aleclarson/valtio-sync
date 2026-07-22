@@ -29,6 +29,7 @@ import {
   type StoredAccount,
   type StoredRecord,
   type SyncStorage,
+  type SyncStorageAdapter,
   type WebStorageLike,
   createIndexedDbSyncStorage,
   createMemoryWebStorage,
@@ -58,8 +59,15 @@ export type {
   SyncSchema,
   infer,
 } from './schema.js'
-export type { StoredAccount, StoredRecord, SyncStorage, WebStorageLike } from './storage.js'
+export type {
+  StoredAccount,
+  StoredRecord,
+  SyncStorage,
+  SyncStorageAdapter,
+  WebStorageLike,
+} from './storage.js'
 export { createMemorySyncStorage, createMemoryWebStorage } from './storage.js'
+export { createMemoryStorageAdapter } from './storage.js'
 
 /** Serializable snapshot of all client-owned local data. */
 export type LocalDataSnapshot = {
@@ -98,9 +106,16 @@ export type SyncTransportInterceptor = (
   next: SyncTransport,
 ) => ReturnType<SyncTransport>
 
+/** Prevent mutation operations from reaching the server while preserving ordinary pulls. */
+export const preventRemoteWrites: SyncTransportInterceptor = (request, next) =>
+  next({
+    ...request,
+    ops: [],
+  })
+
 /** Reactive client status flags and the latest sync error. */
 export type ValtioSyncStatus = {
-  hydrated: boolean
+  phase: 'cold' | 'hydrating' | 'ready' | 'closed'
   syncing: boolean
   dirty: boolean
   online: boolean
@@ -148,7 +163,7 @@ const clientPropertyKeys = [
   'device',
   'session',
   'status',
-  'ready',
+  'hydrate',
   'flush',
   'sync',
   'interceptTransport',
@@ -181,7 +196,7 @@ export type ValtioSyncClient<TSchema extends SyncSchema = SyncSchema> = Collecti
   readonly device: JsonRecord
   readonly session: JsonRecord
   readonly status: ValtioSyncStatus
-  readonly ready: Promise<void>
+  hydrate(adapter?: SyncStorageAdapter): Promise<void>
   flush(): Promise<void>
   sync(): Promise<void>
   interceptTransport(interceptor: SyncTransportInterceptor): () => void
@@ -208,25 +223,21 @@ export type ValtioSyncClientOptions<
   TSession extends FieldMap | undefined = undefined,
 > = {
   endpoint: string
-  namespace?: string
   schema: ClientSchema<TSchema>
+  /** Default local persistence adapter activated by `hydrate()`. */
+  storage: SyncStorageAdapter
   device?: TDevice
   session?: TSession
   schemaVersion?: number
   conflict?: 'rejectStale' | 'lww' | 'serverWins'
   fetch?: typeof fetch
   migrations?: Record<number, LocalMigration>
-  storage?: SyncStorage
-  localStorage?: WebStorageLike
-  sessionStorage?: WebStorageLike
-  indexedDB?: IDBFactory
-  broadcast?: boolean
 }
 
 type ClientInternals = {
   accountKey: string
   collectionKeys: string[]
-  storage: SyncStorage
+  storage: SyncStorage | null
   status: ValtioSyncStatus
   accountMeta: StoredAccount['meta']
   accountData: JsonRecord
@@ -238,6 +249,7 @@ type ClientInternals = {
   lastSyncResponse: SyncResponse | null
   flush(): Promise<void>
   sync(): Promise<void>
+  waitUntilHydrated(): Promise<void>
   readLocalDataSnapshot(): Promise<LocalDataSnapshot>
   mutateCollection(collection: string, mutation: CollectionMutation): void
   pruneLocal(
@@ -268,6 +280,26 @@ type CollectionMutation =
       id: string
     }
 
+type ResolvedStorageContext = {
+  namespace: string
+  storage: SyncStorage
+  localStorage: WebStorageLike
+  sessionStorage: WebStorageLike
+  broadcast: boolean
+}
+
+type PreparedStorageContext = {
+  account: JsonRecord
+  accountMeta: StoredAccount['meta']
+  collections: Record<string, StoredRecord[]>
+  device: JsonRecord
+  session: JsonRecord
+  error: SyncError | null
+}
+
+const adapterOwners = new WeakMap<SyncStorageAdapter, object>()
+const storageOwners = new WeakMap<SyncStorage, object>()
+
 unstable_enableOp()
 
 /** Create a reactive sync client backed by local persistence and a server endpoint. */
@@ -281,7 +313,6 @@ export function valtioSync<
   readonly device: LocalState<TDevice>
   readonly session: LocalState<TSession>
 } {
-  const namespace = options.namespace ?? 'default'
   const accountKey = getAccountKey(options.schema)
   const accountDefinition = options.schema[accountKey] as AccountDefinition
   const collectionKeys = getCollectionKeys(options.schema) as string[]
@@ -293,56 +324,59 @@ export function valtioSync<
   }
   const schemaVersion = getTargetSchemaVersion(options.schemaVersion, options.migrations)
   const status = proxy<ValtioSyncStatus>({
-    hydrated: false,
+    phase: 'cold',
     syncing: false,
     dirty: false,
     online: typeof navigator === 'undefined' ? true : navigator.onLine,
     lastSyncAt: null,
     lastError: null,
   })
-  const storage =
-    options.storage ??
-    createIndexedDbSyncStorage({
-      namespace,
-      collections: collectionKeys,
-      indexedDB: options.indexedDB,
-    })
-  const localStorage =
-    options.localStorage ?? getBrowserStorage('localStorage') ?? createMemoryWebStorage()
-  const sessionStorage =
-    options.sessionStorage ?? getBrowserStorage('sessionStorage') ?? createMemoryWebStorage()
-  const deviceKey = storageKey(namespace, 'device')
-  const sessionKey = storageKey(namespace, 'session')
-  const account = proxy<JsonRecord>(getDefaults(accountDefinition) as JsonRecord)
-  const device = proxy<JsonRecord>(getLocalDefaults(options.device))
-  const session = proxy<JsonRecord>(getLocalDefaults(options.session))
+  const accountDefaults = getDefaults(accountDefinition) as JsonRecord
+  const deviceDefaults = getLocalDefaults(options.device)
+  const sessionDefaults = getLocalDefaults(options.session)
+  let account = createInertJsonRecord(accountDefaults)
+  let device = createInertJsonRecord(deviceDefaults)
+  let session = createInertJsonRecord(sessionDefaults)
   const recordMeta = new Map<string, StoredRecord['meta']>()
   const storedRecords = new Map<string, StoredRecord>()
   const recordCollections = new Map<string, string>()
-  const collections: Record<string, SyncedCollection> = {}
-  const subscriptions: Array<() => void> = []
-  const channel = createBroadcastChannel(namespace, options.broadcast !== false)
+  let collections: Record<string, SyncedCollection> = {}
+  let stateSubscriptions: Array<() => void> = []
+  let storage!: SyncStorage
+  let localStorage!: WebStorageLike
+  let sessionStorage!: WebStorageLike
+  let storageNamespace = ''
+  let deviceKey = ''
+  let sessionKey = ''
+  let channel: BroadcastChannel | null = null
   let accountMeta: StoredAccount['meta'] = {
     schemaVersion,
     lastServerSeq: null,
     sync: cleanMeta(null, 'system'),
   }
   let closed = false
-  let hydrating = true
   let trackingPaused = false
+  let contextTransitionsPending = 0
   let flushTimer: ReturnType<typeof setTimeout> | undefined
   let retryTimer: ReturnType<typeof setTimeout> | undefined
   let retryAttempt = 0
   let writeQueue = Promise.resolve()
   let reconciliationQueue = Promise.resolve()
+  let contextTransitionQueue = Promise.resolve()
+  let activeSyncPromise: Promise<void> | undefined
   const transportInterceptors: Array<{ interceptor: SyncTransportInterceptor }> = []
+  const owner = {}
+  const defaultAdapter = options.storage
+  const contextsByAdapter = new WeakMap<SyncStorageAdapter, ResolvedStorageContext>()
+  const ownedAdapters = new Set<SyncStorageAdapter>()
+  const ownedStorages = new Set<SyncStorage>()
+  let activeContext: ResolvedStorageContext | null = null
+
+  claimAdapter(defaultAdapter)
   class SyncTransportError extends Error {
     readonly reason: 'auth' | 'network'
 
-    constructor(
-      reason: 'auth' | 'network',
-      message: string,
-    ) {
+    constructor(reason: 'auth' | 'network', message: string) {
       super(message)
       this.reason = reason
     }
@@ -351,10 +385,10 @@ export function valtioSync<
   const internals: ClientInternals = {
     accountKey: String(accountKey),
     collectionKeys,
-    storage,
+    storage: null,
     status,
     accountMeta,
-    accountData: snapshotJsonRecord(account),
+    accountData: cloneJsonRecord(accountDefaults),
     recordMeta,
     storedRecords,
     recordCollections,
@@ -363,59 +397,391 @@ export function valtioSync<
     lastSyncResponse: null,
     flush: async () => flush(),
     sync: async () => sync(),
+    waitUntilHydrated: async () => waitUntilHydrated(),
     readLocalDataSnapshot: async () => readLocalDataSnapshot(),
     mutateCollection: (collection, mutation) => mutateCollection(collection, mutation),
     pruneLocal: (collection, ids, pruneOptions) => pruneLocal(collection, ids, pruneOptions),
   }
 
-  for (const key of collectionKeys) {
-    const records = proxy<Record<string, JsonRecord>>({})
-    collections[key] = makeCollection(key, records, internals)
+  collections = createInertCollections(collectionKeys, internals)
+
+  function claimAdapter(adapter: SyncStorageAdapter) {
+    const adapterOwner = adapterOwners.get(adapter)
+    if (adapterOwner && adapterOwner !== owner) {
+      throw new Error('A sync storage adapter can belong to only one live valtio-sync client')
+    }
+
+    if (adapter.storage) {
+      const storageOwner = storageOwners.get(adapter.storage)
+      if (storageOwner && storageOwner !== owner) {
+        throw new Error('Sync storage can belong to only one live valtio-sync client')
+      }
+    }
+
+    adapterOwners.set(adapter, owner)
+    ownedAdapters.add(adapter)
+    if (adapter.storage) {
+      storageOwners.set(adapter.storage, owner)
+      ownedStorages.add(adapter.storage)
+    }
   }
 
-  const ready = hydrate().catch((error: unknown) => {
-    setStatusError(status, {
-      reason: 'server_error',
-      message: error instanceof Error ? error.message : 'Failed to hydrate local state',
-    })
-    throw error
-  })
+  function getStorageContext(adapter: SyncStorageAdapter): ResolvedStorageContext {
+    claimAdapter(adapter)
+    const cached = contextsByAdapter.get(adapter)
+    if (cached) {
+      return cached
+    }
 
-  subscriptions.push(
-    subscribe(device, () => {
-      if (!hydrating) {
-        persistWebState(localStorage, deviceKey, snapshotJsonRecord(device), status)
-      }
-    }, true),
-  )
-  subscriptions.push(
-    subscribe(session, () => {
-      if (!hydrating) {
-        persistWebState(sessionStorage, sessionKey, snapshotJsonRecord(session), status)
-      }
-    }, true),
-  )
-  subscriptions.push(
-    subscribe(account, (ops) => {
-      if (!hydrating && !trackingPaused) {
-        void markAccountDirty(ops)
-      }
-    }, true),
-  )
-  for (const [collection, collectionState] of Object.entries(collections)) {
-    subscriptions.push(
-      subscribe(collectionState.records, (ops) => {
-        if (!hydrating && !trackingPaused) {
-          void markRecordMutations(collection, ops)
-        }
-      }, true),
+    const context = resolveStorageContext(adapter, collectionKeys)
+    const storageOwner = storageOwners.get(context.storage)
+    if (storageOwner && storageOwner !== owner) {
+      throw new Error('Sync storage can belong to only one live valtio-sync client')
+    }
+    storageOwners.set(context.storage, owner)
+    ownedStorages.add(context.storage)
+    contextsByAdapter.set(adapter, context)
+    return context
+  }
+
+  function hideActiveState() {
+    for (const unsubscribe of stateSubscriptions) {
+      unsubscribe()
+    }
+    stateSubscriptions = []
+    assignClientState(
+      createInertJsonRecord(accountDefaults),
+      createInertJsonRecord(deviceDefaults),
+      createInertJsonRecord(sessionDefaults),
+      createInertCollections(collectionKeys, internals),
     )
   }
 
-  if (channel) {
+  function publishActiveState() {
+    assignClientState(account, device, session, collections)
+  }
+
+  function assignClientState(
+    nextAccount: JsonRecord,
+    nextDevice: JsonRecord,
+    nextSession: JsonRecord,
+    nextCollections: Record<string, SyncedCollection>,
+  ) {
+    Object.assign(client, nextCollections, {
+      account: nextAccount,
+      device: nextDevice,
+      session: nextSession,
+    })
+  }
+
+  function subscribeToActiveState() {
+    for (const unsubscribe of stateSubscriptions) {
+      unsubscribe()
+    }
+    stateSubscriptions = [
+      subscribe(
+        device,
+        () => {
+          if (status.phase === 'ready' && contextTransitionsPending === 0) {
+            persistWebState(localStorage, deviceKey, snapshotJsonRecord(device), status)
+          }
+        },
+        true,
+      ),
+      subscribe(
+        session,
+        () => {
+          if (status.phase === 'ready' && contextTransitionsPending === 0) {
+            persistWebState(sessionStorage, sessionKey, snapshotJsonRecord(session), status)
+          }
+        },
+        true,
+      ),
+      subscribe(
+        account,
+        (ops) => {
+          if (status.phase === 'ready' && !trackingPaused && contextTransitionsPending === 0) {
+            void markAccountDirty(ops)
+          }
+        },
+        true,
+      ),
+    ]
+    for (const [collection, collectionState] of Object.entries(collections)) {
+      stateSubscriptions.push(
+        subscribe(
+          collectionState.records,
+          (ops) => {
+            if (status.phase === 'ready' && !trackingPaused && contextTransitionsPending === 0) {
+              void markRecordMutations(collection, ops)
+            }
+          },
+          true,
+        ),
+      )
+    }
+  }
+
+  function hydrate(adapter: SyncStorageAdapter = defaultAdapter): Promise<void> {
+    if (closed) {
+      return Promise.reject(new Error('Cannot hydrate a closed valtio-sync client'))
+    }
+
+    let context: ResolvedStorageContext
+    try {
+      context = getStorageContext(adapter)
+    } catch (error) {
+      return Promise.reject(error)
+    }
+
+    contextTransitionsPending += 1
+    status.phase = 'hydrating'
+    hideActiveState()
+
+    const result = enqueueContextTransition(async () => {
+      const previousContext = activeContext
+      try {
+        if (closed) {
+          throw new Error('Cannot hydrate a closed valtio-sync client')
+        }
+        await activateStorageContext(context)
+        activeContext = context
+      } catch (error) {
+        if (previousContext) {
+          try {
+            await activateStorageContext(previousContext)
+            activeContext = previousContext
+          } catch {
+            // Keep the original failure. The previous context remains the logical active context,
+            // even if its storage cannot currently be read again.
+          }
+        }
+        throw error
+      }
+    })
+
+    return result.finally(() => {
+      contextTransitionsPending -= 1
+      if (contextTransitionsPending === 0 && !closed) {
+        if (activeContext) {
+          publishActiveState()
+          status.phase = 'ready'
+        } else {
+          status.phase = 'cold'
+        }
+      }
+    })
+  }
+
+  function enqueueContextTransition<T>(transition: () => Promise<T>): Promise<T> {
+    const result = contextTransitionQueue.then(transition, transition)
+    contextTransitionQueue = result.then(
+      () => undefined,
+      () => undefined,
+    )
+    return result
+  }
+
+  async function activateStorageContext(context: ResolvedStorageContext) {
+    await settleActiveContext()
+    // Read, migrate, and validate the destination before changing the live context. A failed
+    // adapter therefore cannot strand the client between two persistence backends.
+    const prepared = await prepareStorageContext(context)
+    if (closed) {
+      throw new Error('Cannot hydrate a closed valtio-sync client')
+    }
+
+    channel?.close()
+    channel = null
+    storage = context.storage
+    localStorage = context.localStorage
+    sessionStorage = context.sessionStorage
+    storageNamespace = context.namespace
+    deviceKey = storageKey(storageNamespace, 'device')
+    sessionKey = storageKey(storageNamespace, 'session')
+    internals.storage = storage
+    installPreparedStorageContext(prepared)
+    attachBroadcastChannel(context)
+  }
+
+  async function settleActiveContext() {
+    if (flushTimer) {
+      clearTimeout(flushTimer)
+      flushTimer = undefined
+    }
+    if (retryTimer) {
+      clearTimeout(retryTimer)
+      retryTimer = undefined
+    }
+    // Queued writes close over the mutable active storage variables. They must finish before an
+    // adapter switch or an old mutation could be written into the newly activated context.
+    await reconciliationQueue
+    await writeQueue
+    if (retryTimer) {
+      clearTimeout(retryTimer)
+      retryTimer = undefined
+    }
+  }
+
+  async function prepareStorageContext(
+    context: ResolvedStorageContext,
+  ): Promise<PreparedStorageContext> {
+    const candidateStatus: ValtioSyncStatus = {
+      phase: 'hydrating',
+      syncing: false,
+      dirty: false,
+      online: status.online,
+      lastSyncAt: null,
+      lastError: null,
+    }
+    const contextDeviceKey = storageKey(context.namespace, 'device')
+    const contextSessionKey = storageKey(context.namespace, 'session')
+    let nextDevice = readWebState(
+      options.device,
+      context.localStorage,
+      contextDeviceKey,
+      candidateStatus,
+    )
+    let nextSession = readWebState(
+      options.session,
+      context.sessionStorage,
+      contextSessionKey,
+      candidateStatus,
+    )
+    let storedAccount = await context.storage.readAccount()
+    const collectionsSnapshot: Record<string, StoredRecord[]> = {}
+    for (const key of collectionKeys) {
+      collectionsSnapshot[key] = await context.storage.listRecords(key)
+    }
+
+    let state: LocalDataSnapshot = {
+      account: storedAccount?.data ?? (getDefaults(accountDefinition) as JsonRecord),
+      collections: collectionsSnapshot,
+      device: nextDevice,
+      session: nextSession,
+    }
+    const currentVersion = storedAccount?.meta.schemaVersion ?? 1
+    if (currentVersion < schemaVersion) {
+      state = await migrateLocalData(state, currentVersion, schemaVersion, options.migrations)
+      const migratedMeta: StoredAccount['meta'] = {
+        schemaVersion,
+        lastServerSeq: storedAccount?.meta.lastServerSeq ?? null,
+        sync: storedAccount?.meta.sync ?? cleanMeta(null, currentDeviceId(state.device)),
+      }
+      await writeStorageContextSnapshot(context, state, migratedMeta, candidateStatus)
+      storedAccount = {
+        data: state.account,
+        meta: migratedMeta,
+      }
+      nextDevice = parseLocalOrDefaults(options.device, state.device, candidateStatus)
+      nextSession = parseLocalOrDefaults(options.session, state.session, candidateStatus)
+    }
+
+    const nextAccount = parseRecordOrDefaults(accountDefinition, state.account, candidateStatus)
+    const nextAccountMeta: StoredAccount['meta'] = {
+      schemaVersion,
+      lastServerSeq: storedAccount?.meta.lastServerSeq ?? null,
+      sync: storedAccount?.meta.sync ?? cleanMeta(null, currentDeviceId(nextDevice)),
+    }
+    const parsedCollections: Record<string, StoredRecord[]> = {}
+    for (const key of collectionKeys) {
+      const definition = options.schema[key]
+      parsedCollections[key] = []
+      if (!definition || definition.kind !== 'collection') {
+        continue
+      }
+      for (const record of state.collections[key] ?? []) {
+        try {
+          parsedCollections[key].push({
+            ...record,
+            data: parseRecord(definition, record.data) as JsonRecord,
+          })
+        } catch (error) {
+          setStatusError(candidateStatus, {
+            reason: 'validation',
+            message: error instanceof Error ? error.message : 'Invalid cached record',
+          })
+        }
+      }
+    }
+
+    await context.storage.writeAccount({
+      data: nextAccount,
+      meta: nextAccountMeta,
+    })
+    persistWebState(context.localStorage, contextDeviceKey, nextDevice, candidateStatus)
+    persistWebState(context.sessionStorage, contextSessionKey, nextSession, candidateStatus)
+
+    return {
+      account: nextAccount,
+      accountMeta: nextAccountMeta,
+      collections: parsedCollections,
+      device: nextDevice,
+      session: nextSession,
+      error: candidateStatus.lastError,
+    }
+  }
+
+  async function writeStorageContextSnapshot(
+    context: ResolvedStorageContext,
+    state: LocalDataSnapshot,
+    meta: StoredAccount['meta'],
+    candidateStatus: ValtioSyncStatus,
+  ) {
+    await context.storage.writeAccount({ data: state.account, meta })
+    for (const key of collectionKeys) {
+      await context.storage.clearCollection(key)
+      for (const record of state.collections[key] ?? []) {
+        await context.storage.writeRecord(key, record)
+      }
+    }
+    persistWebState(
+      context.localStorage,
+      storageKey(context.namespace, 'device'),
+      state.device,
+      candidateStatus,
+    )
+    persistWebState(
+      context.sessionStorage,
+      storageKey(context.namespace, 'session'),
+      state.session,
+      candidateStatus,
+    )
+  }
+
+  function installPreparedStorageContext(prepared: PreparedStorageContext) {
+    account = proxy<JsonRecord>(prepared.account)
+    device = proxy<JsonRecord>(prepared.device)
+    session = proxy<JsonRecord>(prepared.session)
+    collections = {}
+    accountMeta = prepared.accountMeta
+    internals.accountMeta = accountMeta
+    internals.accountData = prepared.account
+    recordMeta.clear()
+    storedRecords.clear()
+    for (const key of collectionKeys) {
+      const records = proxy<Record<string, JsonRecord>>({})
+      collections[key] = makeCollection(key, records, internals)
+      hydrateCollectionFromRecords(key, prepared.collections[key] ?? [])
+    }
+    subscribeToActiveState()
+    retryAttempt = 0
+    internals.lastSyncRequest = null
+    internals.lastSyncResponse = null
+    status.lastError = prepared.error
+    status.lastSyncAt = null
+    refreshPendingOps(internals)
+    status.dirty = internals.pendingOps.length > 0
+  }
+
+  function attachBroadcastChannel(context: ResolvedStorageContext) {
+    channel = createBroadcastChannel(context.namespace, context.broadcast)
+    if (!channel) {
+      return
+    }
     channel.onmessage = (event) => {
       const message = event.data as BroadcastMessage
-      if (message.namespace !== namespace || closed) {
+      if (message.namespace !== storageNamespace || closed || contextTransitionsPending > 0) {
         return
       }
       if (message.type === 'clear') {
@@ -424,38 +790,6 @@ export function valtioSync<
         void writeQueue.then(() => hydrateCollection(message.collection!))
       }
     }
-  }
-
-  async function hydrate() {
-    hydrating = true
-    const localDevice = readWebState(options.device, localStorage, deviceKey, status)
-    const localSession = readWebState(options.session, sessionStorage, sessionKey, status)
-    replaceObject(device, localDevice)
-    replaceObject(session, localSession)
-
-    const storedAccount = await storage.readAccount()
-    let state = await readLocalDataSnapshot(storedAccount)
-    const currentVersion = storedAccount?.meta.schemaVersion ?? 1
-
-    if (currentVersion < schemaVersion) {
-      state = await migrateLocalData(state, currentVersion, schemaVersion, options.migrations)
-      await writeLocalDataSnapshot(state)
-    }
-
-    hydrateAccount(state.account, storedAccount)
-
-    for (const key of collectionKeys) {
-      hydrateCollectionFromRecords(key, state.collections[key] ?? [])
-    }
-
-    await storage.writeAccount({
-      data: snapshotJsonRecord(account),
-      meta: accountMeta,
-    })
-    persistWebState(localStorage, deviceKey, snapshotJsonRecord(device), status)
-    persistWebState(sessionStorage, sessionKey, snapshotJsonRecord(session), status)
-    status.hydrated = true
-    hydrating = false
   }
 
   async function readLocalDataSnapshot(
@@ -476,38 +810,6 @@ export function valtioSync<
       device: snapshotJsonRecord(device),
       session: snapshotJsonRecord(session),
     }
-  }
-
-  async function writeLocalDataSnapshot(state: LocalDataSnapshot) {
-    await storage.writeAccount({
-      data: state.account,
-      meta: {
-        ...accountMeta,
-        schemaVersion,
-      },
-    })
-
-    for (const key of collectionKeys) {
-      await storage.clearCollection(key)
-      for (const record of state.collections[key] ?? []) {
-        await storage.writeRecord(key, record)
-      }
-    }
-
-    replaceObject(device, parseLocalOrDefaults(options.device, state.device, status))
-    replaceObject(session, parseLocalOrDefaults(options.session, state.session, status))
-  }
-
-  function hydrateAccount(stateAccount: JsonRecord, storedAccount: StoredAccount | null) {
-    const parsed = parseRecordOrDefaults(accountDefinition, stateAccount, status)
-    replaceObject(account, parsed)
-    accountMeta = {
-      schemaVersion,
-      lastServerSeq: storedAccount?.meta.lastServerSeq ?? accountMeta.lastServerSeq,
-      sync: storedAccount?.meta.sync ?? accountMeta.sync ?? cleanMeta(null, 'system'),
-    }
-    internals.accountMeta = accountMeta
-    internals.accountData = parsed
   }
 
   async function hydrateCollection(collection: string) {
@@ -560,9 +862,7 @@ export function valtioSync<
   }
 
   async function resetProxiesToDefaults() {
-    const wasHydrating = hydrating
-    hydrating = true
-    try {
+    runWithoutTracking(() => {
       replaceObject(account, getDefaults(accountDefinition) as JsonRecord)
       replaceObject(device, getLocalDefaults(options.device))
       replaceObject(session, getLocalDefaults(options.session))
@@ -581,26 +881,46 @@ export function valtioSync<
       }
       internals.accountMeta = accountMeta
       internals.accountData = snapshotJsonRecord(account)
-    } finally {
-      hydrating = wasHydrating
-    }
+    })
   }
 
   async function flush(): Promise<void> {
+    assertPersistedOperationCanQueue()
+    return enqueueContextTransition(async () => {
+      assertHydrated()
+      await flushActiveContext()
+    })
+  }
+
+  async function flushActiveContext(): Promise<void> {
     if (flushTimer) {
       clearTimeout(flushTimer)
       flushTimer = undefined
-    }
-    if (!status.hydrated) {
-      await ready
     }
     await writeQueue
     refreshPendingOps(internals)
   }
 
   async function sync(): Promise<void> {
-    await flush()
-    if (closed || status.syncing) {
+    assertPersistedOperationCanQueue()
+    if (activeSyncPromise) {
+      return activeSyncPromise
+    }
+
+    activeSyncPromise = enqueueContextTransition(async () => {
+      assertHydrated()
+      await performSync()
+    })
+    try {
+      await activeSyncPromise
+    } finally {
+      activeSyncPromise = undefined
+    }
+  }
+
+  async function performSync(): Promise<void> {
+    await flushActiveContext()
+    if (closed) {
       return
     }
 
@@ -616,8 +936,7 @@ export function valtioSync<
 
     try {
       const transport = transportInterceptors.reduceRight<SyncTransport>(
-        (next, registration) => (nextRequest) =>
-          registration.interceptor(nextRequest, next),
+        (next, registration) => (nextRequest) => registration.interceptor(nextRequest, next),
         sendSyncRequest,
       )
       const interceptedResponse = await transport(request)
@@ -658,6 +977,24 @@ export function valtioSync<
       refreshPendingOps(internals)
       status.dirty = internals.pendingOps.length > 0
     }
+  }
+
+  async function waitUntilHydrated() {
+    await contextTransitionQueue
+    assertHydrated()
+  }
+
+  function assertHydrated() {
+    if (closed) {
+      throw new Error('Cannot use a closed valtio-sync client')
+    }
+    if (!activeContext) {
+      throw new Error('Call hydrate() before using persisted valtio-sync operations')
+    }
+  }
+
+  function assertPersistedOperationCanQueue() {
+    assertHydrated()
   }
 
   async function sendSyncRequest(request: SyncRequest): Promise<SyncResponse> {
@@ -924,11 +1261,7 @@ export function valtioSync<
     persistStoredRecord(collection, storedRecord)
   }
 
-  async function applyRemoteDelete(
-    collection: string,
-    id: string,
-    serverVersion: number,
-  ) {
+  async function applyRemoteDelete(collection: string, id: string, serverVersion: number) {
     const collectionState = collections[collection]
     if (!collectionState) {
       return
@@ -999,59 +1332,61 @@ export function valtioSync<
     ids: readonly string[],
     pruneOptions: { dryRun?: boolean } = {},
   ): Promise<LocalPruneResult> {
-    await ready
-    await flush()
-
-    return enqueueReconciliation(async () => {
-      const collectionState = collections[collection]
-      if (!collectionState) {
-        throw new Error(`Unknown synced collection: ${collection}`)
-      }
-
-      const requested = unique([...ids])
-      const candidates: StoredRecord[] = []
-      const missing: string[] = []
-      const protectedRecords: LocalPruneResult['protected'] = []
-
-      for (const id of requested) {
-        const record = storedRecords.get(metaKey(collection, id))
-        if (!record) {
-          missing.push(id)
-          continue
+    assertPersistedOperationCanQueue()
+    return enqueueContextTransition(async () => {
+      assertHydrated()
+      await flushActiveContext()
+      return enqueueReconciliation(async () => {
+        const collectionState = collections[collection]
+        if (!collectionState) {
+          throw new Error(`Unknown synced collection: ${collection}`)
         }
 
-        const protection = getLocalPruneProtection(record.meta)
-        if (protection) {
-          protectedRecords.push({ id, reason: protection })
-        } else {
-          candidates.push(record)
-        }
-      }
+        const requested = unique([...ids])
+        const candidates: StoredRecord[] = []
+        const missing: string[] = []
+        const protectedRecords: LocalPruneResult['protected'] = []
 
-      if (pruneOptions.dryRun) {
+        for (const id of requested) {
+          const record = storedRecords.get(metaKey(collection, id))
+          if (!record) {
+            missing.push(id)
+            continue
+          }
+
+          const protection = getLocalPruneProtection(record.meta)
+          if (protection) {
+            protectedRecords.push({ id, reason: protection })
+          } else {
+            candidates.push(record)
+          }
+        }
+
+        if (pruneOptions.dryRun) {
+          return {
+            dryRun: true,
+            requested,
+            eligible: candidates.map((record) => record.id),
+            evicted: [],
+            missing,
+            protected: protectedRecords,
+          }
+        }
+
+        const { evicted, changed } = await evictObservedRecords(collection, candidates)
+        for (const id of changed) {
+          protectedRecords.push({ id, reason: 'changed' })
+        }
+
         return {
-          dryRun: true,
+          dryRun: false,
           requested,
           eligible: candidates.map((record) => record.id),
-          evicted: [],
+          evicted,
           missing,
           protected: protectedRecords,
         }
-      }
-
-      const { evicted, changed } = await evictObservedRecords(collection, candidates)
-      for (const id of changed) {
-        protectedRecords.push({ id, reason: 'changed' })
-      }
-
-      return {
-        dryRun: false,
-        requested,
-        eligible: candidates.map((record) => record.id),
-        evicted,
-        missing,
-        protected: protectedRecords,
-      }
+      })
     })
   }
 
@@ -1082,7 +1417,7 @@ export function valtioSync<
     }
     if (evicted.length > 0) {
       channel?.postMessage({
-        namespace,
+        namespace: storageNamespace,
         type: 'collectionChanged',
         collection,
       } satisfies BroadcastMessage)
@@ -1091,6 +1426,9 @@ export function valtioSync<
   }
 
   function mutateCollection(collection: string, mutation: CollectionMutation) {
+    if (status.phase !== 'ready' || contextTransitionsPending > 0) {
+      throw new Error('Await hydrate() before mutating a synced collection')
+    }
     const definition = options.schema[collection]
     const collectionState = collections[collection]
 
@@ -1181,7 +1519,7 @@ export function valtioSync<
       enqueueStorageWrite(async () => {
         await storage.deleteRecord(collection, mutation.id)
         channel?.postMessage({
-          namespace,
+          namespace: storageNamespace,
           type: 'collectionChanged',
           collection,
         } satisfies BroadcastMessage)
@@ -1310,7 +1648,7 @@ export function valtioSync<
     enqueueStorageWrite(async () => {
       await storage.writeRecord(collection, record)
       channel?.postMessage({
-        namespace,
+        namespace: storageNamespace,
         type: 'collectionChanged',
         collection,
       } satisfies BroadcastMessage)
@@ -1333,7 +1671,7 @@ export function valtioSync<
   }
 
   function scheduleRetry() {
-    if (!status.dirty || retryTimer) {
+    if (status.phase !== 'ready' || contextTransitionsPending > 0 || !status.dirty || retryTimer) {
       return
     }
 
@@ -1342,7 +1680,7 @@ export function valtioSync<
     retryAttempt += 1
     retryTimer = setTimeout(() => {
       retryTimer = undefined
-      if (status.dirty && !closed) {
+      if (status.phase === 'ready' && status.dirty && !closed && contextTransitionsPending === 0) {
         void sync()
       }
     }, baseDelay * jitter)
@@ -1379,6 +1717,17 @@ export function valtioSync<
     source: ValtioSyncClient,
     adoptOptions: AdoptLocalDataOptions = {},
   ): Promise<void> {
+    assertPersistedOperationCanQueue()
+    return enqueueContextTransition(async () => {
+      assertHydrated()
+      await adoptLocalDataActive(source, adoptOptions)
+    })
+  }
+
+  async function adoptLocalDataActive(
+    source: ValtioSyncClient,
+    adoptOptions: AdoptLocalDataOptions,
+  ): Promise<void> {
     const sourceInternals = getClientInternals(source)
     const copyLocalState = adoptOptions.copyLocalState ?? true
     const clearSource = adoptOptions.clearSource ?? 'never'
@@ -1399,15 +1748,15 @@ export function valtioSync<
 
     assertCompatibleLocalDataSource(sourceInternals, String(accountKey), collectionKeys)
 
-    await Promise.all([ready, source.ready])
-    await Promise.all([flush(), sourceInternals.flush()])
+    await sourceInternals.waitUntilHydrated()
+    await Promise.all([flushActiveContext(), sourceInternals.flush()])
     assertNewAccountAdoptionTargetIsEmpty(internals, getDefaults(accountDefinition) as JsonRecord)
 
     const sourceState = await sourceInternals.readLocalDataSnapshot()
     await importNewAccountLocalData(sourceState, copyLocalState)
 
     if (shouldSync) {
-      await sync()
+      await performSync()
     }
 
     if (clearSource === 'afterSuccessfulSync') {
@@ -1479,30 +1828,24 @@ export function valtioSync<
     recordMeta.clear()
     storedRecords.clear()
 
-    const wasHydrating = hydrating
-    hydrating = true
-    try {
-      runWithoutTracking(() => {
-        replaceObject(account, nextAccount)
-        replaceObject(device, nextDevice)
-        replaceObject(session, nextSession)
+    runWithoutTracking(() => {
+      replaceObject(account, nextAccount)
+      replaceObject(device, nextDevice)
+      replaceObject(session, nextSession)
 
-        for (const collection of collectionKeys) {
-          const collectionState = collections[collection]
-          if (!collectionState) {
-            continue
-          }
-
-          const nextRecords: Record<string, JsonRecord> = {}
-          for (const record of promotedCollections[collection] ?? []) {
-            nextRecords[record.id] = record.data
-          }
-          replaceObject(collectionState.records, nextRecords)
+      for (const collection of collectionKeys) {
+        const collectionState = collections[collection]
+        if (!collectionState) {
+          continue
         }
-      })
-    } finally {
-      hydrating = wasHydrating
-    }
+
+        const nextRecords: Record<string, JsonRecord> = {}
+        for (const record of promotedCollections[collection] ?? []) {
+          nextRecords[record.id] = record.data
+        }
+        replaceObject(collectionState.records, nextRecords)
+      }
+    })
 
     await storage.writeAccount({
       data: nextAccount,
@@ -1517,7 +1860,7 @@ export function valtioSync<
         await storage.writeRecord(collection, record)
       }
       channel?.postMessage({
-        namespace,
+        namespace: storageNamespace,
         type: 'collectionChanged',
         collection,
       } satisfies BroadcastMessage)
@@ -1532,32 +1875,43 @@ export function valtioSync<
   }
 
   const clearLocalData = async (): Promise<void> => {
-    await writeQueue
-    await storage.clearAll()
-    await resetProxiesToDefaults()
-    await Promise.resolve()
-    localStorage.removeItem(deviceKey)
-    sessionStorage.removeItem(sessionKey)
-    channel?.postMessage({ namespace, type: 'clear' } satisfies BroadcastMessage)
+    assertPersistedOperationCanQueue()
+    return enqueueContextTransition(async () => {
+      assertHydrated()
+      await writeQueue
+      await storage.clearAll()
+      await resetProxiesToDefaults()
+      await Promise.resolve()
+      localStorage.removeItem(deviceKey)
+      sessionStorage.removeItem(sessionKey)
+      channel?.postMessage({
+        namespace: storageNamespace,
+        type: 'clear',
+      } satisfies BroadcastMessage)
+    })
   }
 
   const clearCollection = async (collection: SyncedCollection): Promise<void> => {
-    await writeQueue
-    const collectionName = recordCollections.get(collection.name) ?? collection.name
-    await storage.clearCollection(collectionName)
-    replaceObject(collection.records, {})
-    for (const key of recordMeta.keys()) {
-      if (key.startsWith(`${collectionName}:`)) {
-        recordMeta.delete(key)
-        storedRecords.delete(key)
+    assertPersistedOperationCanQueue()
+    return enqueueContextTransition(async () => {
+      assertHydrated()
+      await writeQueue
+      const collectionName = recordCollections.get(collection.name) ?? collection.name
+      await storage.clearCollection(collectionName)
+      replaceObject(collection.records, {})
+      for (const key of recordMeta.keys()) {
+        if (key.startsWith(`${collectionName}:`)) {
+          recordMeta.delete(key)
+          storedRecords.delete(key)
+        }
       }
-    }
-    refreshPendingOps(internals)
-    channel?.postMessage({
-      namespace,
-      type: 'collectionChanged',
-      collection: collectionName,
-    } satisfies BroadcastMessage)
+      refreshPendingOps(internals)
+      channel?.postMessage({
+        namespace: storageNamespace,
+        type: 'collectionChanged',
+        collection: collectionName,
+      } satisfies BroadcastMessage)
+    })
   }
 
   const client: ValtioSyncClient<TSchema> & {
@@ -1569,7 +1923,7 @@ export function valtioSync<
     device: device as LocalState<TDevice>,
     session: session as LocalState<TSession>,
     status,
-    ready,
+    hydrate,
     flush,
     sync,
     interceptTransport,
@@ -1581,18 +1935,44 @@ export function valtioSync<
     },
     close() {
       closed = true
+      status.phase = 'closed'
       if (flushTimer) {
         clearTimeout(flushTimer)
       }
       if (retryTimer) {
         clearTimeout(retryTimer)
       }
-      for (const unsubscribe of subscriptions) {
+      for (const unsubscribe of stateSubscriptions) {
         unsubscribe()
       }
+      stateSubscriptions = []
       transportInterceptors.length = 0
       channel?.close()
-      storage.close?.()
+      channel = null
+      activeContext = null
+      internals.storage = null
+      assignClientState(
+        createInertJsonRecord(accountDefaults),
+        createInertJsonRecord(deviceDefaults),
+        createInertJsonRecord(sessionDefaults),
+        createInertCollections(collectionKeys, internals),
+      )
+      for (const ownedStorage of ownedStorages) {
+        try {
+          ownedStorage.close?.()
+        } finally {
+          if (storageOwners.get(ownedStorage) === owner) {
+            storageOwners.delete(ownedStorage)
+          }
+        }
+      }
+      ownedStorages.clear()
+      for (const ownedAdapter of ownedAdapters) {
+        if (adapterOwners.get(ownedAdapter) === owner) {
+          adapterOwners.delete(ownedAdapter)
+        }
+      }
+      ownedAdapters.clear()
     },
     debug: {
       getStatus: () => snapshot(status) as ValtioSyncStatus,
@@ -1669,6 +2049,74 @@ function makeCollection(
   }
   internals.recordCollections.set(collection.name, name)
   return collection
+}
+
+function createInertCollections(
+  collectionKeys: string[],
+  internals: ClientInternals,
+): Record<string, SyncedCollection> {
+  return Object.fromEntries(
+    collectionKeys.map((key) => [
+      key,
+      makeCollection(key, createInertJsonRecord({}) as Record<string, JsonRecord>, internals),
+    ]),
+  )
+}
+
+function createInertJsonRecord(value: JsonRecord): JsonRecord {
+  const cache = new WeakMap<object, object>()
+  const wrap = (current: JsonValue): JsonValue => {
+    if (current === null || typeof current !== 'object') {
+      return current
+    }
+    const cached = cache.get(current)
+    if (cached) {
+      return cached as JsonValue
+    }
+    const target = Array.isArray(current) ? [...current] : { ...current }
+    const inert = new Proxy(target, {
+      get(targetValue, property, receiver) {
+        return wrap(Reflect.get(targetValue, property, receiver) as JsonValue)
+      },
+      set() {
+        return true
+      },
+      deleteProperty(targetValue, property) {
+        return Reflect.getOwnPropertyDescriptor(targetValue, property)?.configurable !== false
+      },
+      defineProperty() {
+        return true
+      },
+    })
+    cache.set(current, inert)
+    return inert as JsonValue
+  }
+  return wrap(cloneJsonRecord(value)) as JsonRecord
+}
+
+function resolveStorageContext(
+  adapter: SyncStorageAdapter,
+  collections: string[],
+): ResolvedStorageContext {
+  if (!adapter.namespace.trim()) {
+    throw new Error('Sync storage adapter namespace must not be empty')
+  }
+
+  return {
+    namespace: adapter.namespace,
+    storage:
+      adapter.storage ??
+      createIndexedDbSyncStorage({
+        namespace: adapter.namespace,
+        collections,
+        indexedDB: adapter.indexedDB,
+      }),
+    localStorage:
+      adapter.localStorage ?? getBrowserStorage('localStorage') ?? createMemoryWebStorage(),
+    sessionStorage:
+      adapter.sessionStorage ?? getBrowserStorage('sessionStorage') ?? createMemoryWebStorage(),
+    broadcast: adapter.broadcast !== false,
+  }
 }
 
 function getTargetSchemaVersion(
@@ -1766,10 +2214,7 @@ function refreshPendingOps(internals: ClientInternals) {
   internals.pendingOps = ops
 }
 
-function cleanMeta(
-  serverVersion: number | null,
-  updatedByDevice: string,
-): StoredRecord['meta'] {
+function cleanMeta(serverVersion: number | null, updatedByDevice: string): StoredRecord['meta'] {
   return {
     dirty: false,
     deleted: false,
@@ -1782,18 +2227,13 @@ function cleanMeta(
   }
 }
 
-function dirtyMeta(
-  previous: StoredRecord['meta'],
-  touched: string[],
-): StoredRecord['meta'] {
+function dirtyMeta(previous: StoredRecord['meta'], touched: string[]): StoredRecord['meta'] {
   const nextTouched = unique([...(previous.touched ?? []), ...touched])
   return {
     ...previous,
     dirty: true,
     deleted: false,
-    baseServerVersion: previous.dirty
-      ? previous.baseServerVersion
-      : previous.serverVersion,
+    baseServerVersion: previous.dirty ? previous.baseServerVersion : previous.serverVersion,
     updatedAtClient: Date.now(),
     mutationId: previous.mutationId ?? createMutationId(),
     touched: nextTouched,
@@ -1952,6 +2392,10 @@ function persistWebState(
 
 function snapshotJsonRecord(value: object): JsonRecord {
   return JSON.parse(JSON.stringify(snapshot(value)))
+}
+
+function cloneJsonRecord(value: JsonRecord): JsonRecord {
+  return JSON.parse(JSON.stringify(value))
 }
 
 function replaceObject(target: Record<string, unknown>, value: Record<string, unknown>) {

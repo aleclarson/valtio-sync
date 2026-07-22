@@ -26,14 +26,16 @@ Local proxy writes are batched. Use fake timers to advance `100` ms when needed,
 
 Data appears under the wrong user
 
-Set a stable per-user `namespace`, such as `my-app:${user.id}`. The namespace scopes IndexedDB, local storage, session storage, and BroadcastChannel state.
+Construct the client with a stable per-user default adapter, such as
+`storage: { namespace: 'my-app:user_1' }`, then call `await sync.hydrate()`. The namespace scopes
+IndexedDB, local storage, session storage, and BroadcastChannel state.
 
 Need to clear local data
 
 Use:
 
 ```ts
-await sync.clearLocalData();
+await sync.clearLocalData()
 ```
 
 This clears synced records, account state, device state, session state, and notifies other tabs in the same namespace.

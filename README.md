@@ -27,20 +27,21 @@ const todos = defineCollection({
 
 const vs = valtioSync({
   endpoint: '/api/sync',
-  namespace: `my-app:${user.id}`,
   schema: { account, todos },
+  storage: { namespace: `my-app:${user.id}` },
 })
 
-await vs.ready
+await vs.hydrate()
 
 vs.todos.create({ id: 'todo_1', title: 'Ship v1' })
 vs.todos.records.todo_1.completed = true
 await vs.sync()
 ```
 
-Local persistence is automatic, but applications trigger the first remote sync by calling
-`sync()`. See [Sync Lifecycle](docs/sync-lifecycle.md) for retry behavior and recommended sync
-triggers.
+Hydration is explicit. The constructor requires a default storage adapter, and `hydrate()` activates
+it. After hydration, local persistence is
+automatic; applications trigger remote synchronization by calling `sync()`. See
+[Sync Lifecycle](docs/sync-lifecycle.md) for retry behavior and recommended sync triggers.
 
 ## Documentation
 

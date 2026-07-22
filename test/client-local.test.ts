@@ -8,6 +8,10 @@ import {
 } from '../src/schema.js'
 import {
   type StoredRecord,
+  type SyncStorage,
+  type SyncStorageAdapter,
+  type WebStorageLike,
+  createMemoryStorageAdapter,
   createMemorySyncStorage,
   createMemoryWebStorage,
 } from '../src/storage.js'
@@ -55,8 +59,19 @@ function jsonResponse(value: unknown, init?: ResponseInit) {
   })
 }
 
+function memoryAdapter(
+  namespace: string,
+  storage: SyncStorage = createMemorySyncStorage(),
+  localStorage: WebStorageLike = createMemoryWebStorage(),
+  sessionStorage: WebStorageLike = createMemoryWebStorage(),
+  broadcast = false,
+): SyncStorageAdapter {
+  return { namespace, storage, localStorage, sessionStorage, broadcast }
+}
+
 test('hydrates defaults from an empty local cache', async () => {
   const vs = valtioSync({
+    storage: createMemoryStorageAdapter(),
     endpoint: '/api/sync',
     schema: { account, todos },
     device: {
@@ -65,14 +80,11 @@ test('hydrates defaults from an empty local cache', async () => {
     session: {
       sidebarOpen: z.boolean().default(false),
     },
-    storage: createMemorySyncStorage(),
-    localStorage: createMemoryWebStorage(),
-    sessionStorage: createMemoryWebStorage(),
   })
 
-  await vs.ready
+  await vs.hydrate(memoryAdapter('defaults'))
 
-  expect(vs.status.hydrated).toBe(true)
+  expect(vs.status.phase).toBe('ready')
   expect(vs.account).toMatchObject({ theme: 'light' })
   expect(vs.device).toMatchObject({ deviceId: 'device_1' })
   expect(vs.session).toMatchObject({ sidebarOpen: false })
@@ -82,6 +94,7 @@ test('hydrates defaults from an empty local cache', async () => {
 test('rejects collection names reserved by the client API', () => {
   expect(() =>
     valtioSync({
+      storage: createMemoryStorageAdapter(),
       endpoint: '/api/sync',
       schema: { account, sync: todos } as SyncSchema,
     }),
@@ -103,12 +116,10 @@ test('hydrates cached records after local migrations', async () => {
   })
 
   const vs = valtioSync({
+    storage: createMemoryStorageAdapter(),
     endpoint: '/api/sync',
     schemaVersion: 2,
     schema: { account, todos },
-    storage,
-    localStorage: createMemoryWebStorage(),
-    sessionStorage: createMemoryWebStorage(),
     migrations: {
       2: (state) => ({
         ...state,
@@ -126,7 +137,7 @@ test('hydrates cached records after local migrations', async () => {
     },
   })
 
-  await vs.ready
+  await vs.hydrate(memoryAdapter('migrations', storage))
 
   expect(vs.account).toMatchObject({ theme: 'dark' })
   expect(vs.todos.get('todo_1')).toMatchObject({
@@ -157,18 +168,15 @@ test('clears persisted local data and resets proxies', async () => {
   localStorage.setItem('valtio-sync:user_1:device', JSON.stringify({ deviceId: 'device_2' }))
 
   const vs = valtioSync({
+    storage: createMemoryStorageAdapter(),
     endpoint: '/api/sync',
-    namespace: 'user_1',
     schema: { account, todos },
     device: {
       deviceId: z.string().default('device_1'),
     },
-    storage,
-    localStorage,
-    sessionStorage: createMemoryWebStorage(),
   })
 
-  await vs.ready
+  await vs.hydrate(memoryAdapter('user_1', storage, localStorage))
   await vs.clearLocalData()
 
   expect(await storage.readAccount()).toBeNull()
@@ -186,8 +194,8 @@ test('adopts anonymous local data into a new account and clears source after syn
   const sessionStorage = createMemoryWebStorage()
   const syncRequests: unknown[] = []
   const anonymous = valtioSync({
+    storage: createMemoryStorageAdapter(),
     endpoint: '/api/sync',
-    namespace: 'anon_1',
     schema: { account, todos },
     device: {
       deviceId: z.string().default('device_1'),
@@ -195,13 +203,10 @@ test('adopts anonymous local data into a new account and clears source after syn
     session: {
       sidebarOpen: z.boolean().default(false),
     },
-    storage: sourceStorage,
-    localStorage,
-    sessionStorage,
   })
   const signedIn = valtioSync({
+    storage: createMemoryStorageAdapter(),
     endpoint: '/api/sync',
-    namespace: 'user_1',
     schema: { account, todos },
     device: {
       deviceId: z.string().default('device_2'),
@@ -209,9 +214,6 @@ test('adopts anonymous local data into a new account and clears source after syn
     session: {
       sidebarOpen: z.boolean().default(false),
     },
-    storage: targetStorage,
-    localStorage,
-    sessionStorage,
     fetch: async (_input, init) => {
       const request = JSON.parse(String(init?.body))
       syncRequests.push(request)
@@ -230,7 +232,10 @@ test('adopts anonymous local data into a new account and clears source after syn
       })
     },
   })
-  await Promise.all([anonymous.ready, signedIn.ready])
+  await Promise.all([
+    anonymous.hydrate(memoryAdapter('anon_1', sourceStorage, localStorage, sessionStorage)),
+    signedIn.hydrate(memoryAdapter('user_1', targetStorage, localStorage, sessionStorage)),
+  ])
 
   anonymous.account.theme = 'dark'
   anonymous.device.deviceId = 'anonymous_device'
@@ -280,25 +285,22 @@ test('adopts anonymous local data into a new account and clears source after syn
 test('keeps anonymous source data when promoted sync fails', async () => {
   const sourceStorage = createMemorySyncStorage()
   const signedIn = valtioSync({
+    storage: createMemoryStorageAdapter(),
     endpoint: '/api/sync',
-    namespace: 'user_1',
     schema: { account, todos },
-    storage: createMemorySyncStorage(),
-    localStorage: createMemoryWebStorage(),
-    sessionStorage: createMemoryWebStorage(),
     fetch: async () => {
       throw new Error('offline')
     },
   })
   const anonymous = valtioSync({
+    storage: createMemoryStorageAdapter(),
     endpoint: '/api/sync',
-    namespace: 'anon_1',
     schema: { account, todos },
-    storage: sourceStorage,
-    localStorage: createMemoryWebStorage(),
-    sessionStorage: createMemoryWebStorage(),
   })
-  await Promise.all([anonymous.ready, signedIn.ready])
+  await Promise.all([
+    anonymous.hydrate(memoryAdapter('anon_1', sourceStorage)),
+    signedIn.hydrate(memoryAdapter('user_1')),
+  ])
   anonymous.todos.create({ id: 'todo_1', title: 'Keep me' })
 
   await expect(
@@ -316,26 +318,33 @@ test('keeps anonymous source data when promoted sync fails', async () => {
 
 test('rejects anonymous local data adoption into a non-empty target', async () => {
   const anonymous = valtioSync({
+    storage: createMemoryStorageAdapter(),
     endpoint: '/api/sync',
-    namespace: 'anon_1',
     schema: { account, todos },
-    storage: createMemorySyncStorage(),
-    localStorage: createMemoryWebStorage(),
-    sessionStorage: createMemoryWebStorage(),
   })
   const signedIn = valtioSync({
+    storage: createMemoryStorageAdapter(),
     endpoint: '/api/sync',
-    namespace: 'user_1',
     schema: { account, todos },
-    storage: createMemorySyncStorage({
-      collections: {
-        todos: [makeStoredTodo('todo_existing', { id: 'todo_existing', title: 'Existing' })],
-      },
-    }),
-    localStorage: createMemoryWebStorage(),
-    sessionStorage: createMemoryWebStorage(),
   })
-  await Promise.all([anonymous.ready, signedIn.ready])
+  await Promise.all([
+    anonymous.hydrate(memoryAdapter('anon_1')),
+    signedIn.hydrate(
+      memoryAdapter(
+        'user_1',
+        createMemorySyncStorage({
+          collections: {
+            todos: [
+              makeStoredTodo('todo_existing', {
+                id: 'todo_existing',
+                title: 'Existing',
+              }),
+            ],
+          },
+        }),
+      ),
+    ),
+  ])
   anonymous.todos.create({ id: 'todo_1', title: 'Anonymous draft' })
 
   await expect(signedIn.adoptLocalData(anonymous)).rejects.toThrow('target with cached records')
@@ -350,23 +359,22 @@ test('broadcasts local collection changes to another tab', async () => {
   }
 
   const storage = createMemorySyncStorage()
+  const firstStorage: SyncStorage = { ...storage }
+  const secondStorage: SyncStorage = { ...storage }
   const firstTab = valtioSync({
+    storage: createMemoryStorageAdapter(),
     endpoint: '/api/sync',
-    namespace: 'user_1',
     schema: { account, todos },
-    storage,
-    localStorage: createMemoryWebStorage(),
-    sessionStorage: createMemoryWebStorage(),
   })
   const secondTab = valtioSync({
+    storage: createMemoryStorageAdapter(),
     endpoint: '/api/sync',
-    namespace: 'user_1',
     schema: { account, todos },
-    storage,
-    localStorage: createMemoryWebStorage(),
-    sessionStorage: createMemoryWebStorage(),
   })
-  await Promise.all([firstTab.ready, secondTab.ready])
+  await Promise.all([
+    firstTab.hydrate(memoryAdapter('user_1', firstStorage, undefined, undefined, true)),
+    secondTab.hydrate(memoryAdapter('user_1', secondStorage, undefined, undefined, true)),
+  ])
 
   firstTab.todos.create({ id: 'todo_1', title: 'From tab one' })
   await firstTab.flush()

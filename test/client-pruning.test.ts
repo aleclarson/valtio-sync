@@ -1,7 +1,11 @@
 import { z } from 'zod'
 import { valtioSync } from '../src/client.js'
 import { defineAccount, defineCollection } from '../src/schema.js'
-import { type StoredRecord, createMemorySyncStorage } from '../src/storage.js'
+import {
+  type StoredRecord,
+  createMemoryStorageAdapter,
+  createMemorySyncStorage,
+} from '../src/storage.js'
 
 const account = defineAccount({ fields: {} })
 const entries = defineCollection({
@@ -43,13 +47,13 @@ test('prunes clean records locally without producing server delete operations', 
   const vs = valtioSync({
     endpoint: '/api/sync',
     schema: { account, entries },
-    storage,
+    storage: createMemoryStorageAdapter(),
     fetch: async (_input, init) => {
       requests.push(JSON.parse(String(init?.body)))
       return jsonResponse({ serverSeq: 2, accepted: [], rejected: [], changes: {} })
     },
   })
-  await vs.ready
+  await vs.hydrate({ namespace: 'prune-clean', storage, broadcast: false })
 
   const result = await vs.entries.pruneLocal(['old'])
 
@@ -86,9 +90,9 @@ test('dry-run reports actionable records and pruning preserves them', async () =
   const vs = valtioSync({
     endpoint: '/api/sync',
     schema: { account, entries },
-    storage,
+    storage: createMemoryStorageAdapter(),
   })
-  await vs.ready
+  await vs.hydrate({ namespace: 'prune-protected', storage, broadcast: false })
   vs.entries.create({ id: 'dirty-create', label: 'new' })
 
   const result = await vs.entries.pruneLocal(
@@ -141,9 +145,9 @@ test('compare-and-delete preserves a record changed by another client', async ()
   const vs = valtioSync({
     endpoint: '/api/sync',
     schema: { account, entries },
-    storage,
+    storage: createMemoryStorageAdapter(),
   })
-  await vs.ready
+  await vs.hydrate({ namespace: 'prune-concurrent', storage, broadcast: false })
 
   const result = await vs.entries.pruneLocal(['entry_1'])
 
@@ -179,9 +183,9 @@ test('dependent collections can be pruned in stages from retained records', asyn
   const vs = valtioSync({
     endpoint: '/api/sync',
     schema: { account, meals, foods },
-    storage,
+    storage: createMemoryStorageAdapter(),
   })
-  await vs.ready
+  await vs.hydrate({ namespace: 'prune-dependent', storage, broadcast: false })
 
   await vs.meals.pruneLocal(
     vs.meals

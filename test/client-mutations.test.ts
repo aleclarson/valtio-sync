@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { valtioSync } from '../src/client.js'
 import { defineAccount, defineCollection } from '../src/schema.js'
-import { type StoredRecord, createMemorySyncStorage } from '../src/storage.js'
+import { type StoredRecord, createMemoryStorageAdapter } from '../src/storage.js'
 
 const account = defineAccount({
   fields: {
@@ -58,10 +58,10 @@ test('create then delete before flush sends no op', async () => {
     valtioSync({
       endpoint: '/api/sync',
       schema: { account, todos },
-      storage: createMemorySyncStorage(),
+      storage: createMemoryStorageAdapter(),
     }),
   )
-  await vs.ready
+  await vs.hydrate(createMemoryStorageAdapter({ namespace: 'create-delete' }))
 
   vs.todos.create({ id: 'todo_1', title: 'Draft' })
   vs.todos.delete('todo_1')
@@ -79,14 +79,17 @@ test('update then update compacts to one final patch', async () => {
     valtioSync({
       endpoint: '/api/sync',
       schema: { account, todos },
-      storage: createMemorySyncStorage({
-        collections: {
-          todos: [makeStoredTodo('todo_1', 'Old')],
-        },
-      }),
+      storage: createMemoryStorageAdapter(),
     }),
   )
-  await vs.ready
+  await vs.hydrate(
+    createMemoryStorageAdapter({
+      namespace: 'update-update',
+      collections: {
+        todos: [makeStoredTodo('todo_1', 'Old')],
+      },
+    }),
+  )
 
   vs.todos.update('todo_1', { title: 'New' })
   vs.todos.update('todo_1', { completed: true })
@@ -113,10 +116,10 @@ test('create omits untouched defaults but includes explicitly touched defaults',
     valtioSync({
       endpoint: '/api/sync',
       schema: { account, todos },
-      storage: createMemorySyncStorage(),
+      storage: createMemoryStorageAdapter(),
     }),
   )
-  await vs.ready
+  await vs.hydrate(createMemoryStorageAdapter({ namespace: 'create-defaults' }))
 
   vs.todos.create({ id: 'todo_1', title: 'Implicit default' })
   vs.todos.create({
@@ -155,14 +158,17 @@ test('direct proxy mutation becomes a dirty update after the batch window', asyn
     valtioSync({
       endpoint: '/api/sync',
       schema: { account, todos },
-      storage: createMemorySyncStorage({
-        collections: {
-          todos: [makeStoredTodo('todo_1', 'Old')],
-        },
-      }),
+      storage: createMemoryStorageAdapter(),
     }),
   )
-  await vs.ready
+  await vs.hydrate(
+    createMemoryStorageAdapter({
+      namespace: 'direct-mutation',
+      collections: {
+        todos: [makeStoredTodo('todo_1', 'Old')],
+      },
+    }),
+  )
 
   vs.todos.records.todo_1.title = 'Direct'
   await vi.advanceTimersByTimeAsync(100)

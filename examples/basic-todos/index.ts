@@ -1,6 +1,5 @@
 import {
-  createMemorySyncStorage,
-  createMemoryWebStorage,
+  createMemoryStorageAdapter,
   valtioSync as createValtioSyncClient,
 } from 'valtio-sync/client'
 import { rejectSync, valtioSync as createValtioSyncServer } from 'valtio-sync/server'
@@ -81,11 +80,8 @@ const syncServer = createValtioSyncServer({
 
 const sync = createValtioSyncClient({
   endpoint: '/api/sync',
-  namespace: 'basic-todos:demo-user',
   schema: { account, todos },
-  storage: createMemorySyncStorage(),
-  localStorage: createMemoryWebStorage(),
-  sessionStorage: createMemoryWebStorage(),
+  storage: createMemoryStorageAdapter({ namespace: 'basic-todos:demo-user' }),
   // This bridge keeps the example single-file. Browser apps usually let fetch
   // hit their real /api/sync route instead.
   fetch: (_input, init) => {
@@ -99,7 +95,7 @@ const sync = createValtioSyncClient({
   },
 })
 
-await sync.ready
+await sync.hydrate()
 
 // Application code mutates Valtio state normally. The client persists the write
 // locally, marks it dirty, and sends it on the next sync.

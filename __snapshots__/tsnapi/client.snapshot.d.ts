@@ -162,6 +162,14 @@ export type SyncStorage = {
   clearAll(): Promise<void>;
   close?(): void;
 };
+export type SyncStorageAdapter = {
+  namespace: string;
+  storage?: SyncStorage;
+  localStorage?: WebStorageLike;
+  sessionStorage?: WebStorageLike;
+  indexedDB?: IDBFactory;
+  broadcast?: boolean;
+};
 export type SyncTransport = (_: SyncRequest) => SyncResponse | null | Promise<SyncResponse | null>;
 export type SyncTransportInterceptor = (_: SyncRequest, _: SyncTransport) => ReturnType<SyncTransport>;
 export type UpdateSyncOp = {
@@ -178,7 +186,7 @@ export type ValtioSyncClient<TSchema extends SyncSchema = SyncSchema> = Collecti
   readonly device: JsonRecord;
   readonly session: JsonRecord;
   readonly status: ValtioSyncStatus;
-  readonly ready: Promise<void>;
+  hydrate(_?: SyncStorageAdapter): Promise<void>;
   flush(): Promise<void>;
   sync(): Promise<void>;
   interceptTransport(_: SyncTransportInterceptor): () => void;
@@ -203,22 +211,17 @@ export type ValtioSyncClient<TSchema extends SyncSchema = SyncSchema> = Collecti
 };
 export type ValtioSyncClientOptions<TSchema extends SyncSchema, TDevice extends FieldMap | undefined = undefined, TSession extends FieldMap | undefined = undefined> = {
   endpoint: string;
-  namespace?: string;
   schema: ClientSchema<TSchema>;
+  storage: SyncStorageAdapter;
   device?: TDevice;
   session?: TSession;
   schemaVersion?: number;
   conflict?: 'rejectStale' | 'lww' | 'serverWins';
   fetch?: typeof fetch;
   migrations?: Record<number, LocalMigration>;
-  storage?: SyncStorage;
-  localStorage?: WebStorageLike;
-  sessionStorage?: WebStorageLike;
-  indexedDB?: IDBFactory;
-  broadcast?: boolean;
 };
 export type ValtioSyncStatus = {
-  hydrated: boolean;
+  phase: 'cold' | 'hydrating' | 'ready' | 'closed';
   syncing: boolean;
   dirty: boolean;
   online: boolean;
@@ -233,6 +236,13 @@ export type WebStorageLike = {
 // #endregion
 
 // #region Functions
+export declare function createMemoryStorageAdapter(_?: {
+  namespace?: string;
+  account?: StoredAccount;
+  collections?: Record<string, StoredRecord[]>;
+  device?: JsonRecord;
+  session?: JsonRecord;
+}): SyncStorageAdapter;
 export declare function createMemorySyncStorage(_?: {
   account?: StoredAccount;
   collections?: Record<string, StoredRecord[]>;
@@ -242,6 +252,10 @@ export declare function valtioSync<const TSchema extends SyncSchema, const TDevi
   readonly device: LocalState<TDevice>;
   readonly session: LocalState<TSession>;
 };
+// #endregion
+
+// #region Variables
+export declare const preventRemoteWrites: SyncTransportInterceptor;
 // #endregion
 
 // #region Other

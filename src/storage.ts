@@ -37,10 +37,7 @@ export type SyncStorage = {
   writeRecord(collection: string, record: StoredRecord): Promise<void>
   deleteRecord(collection: string, id: string): Promise<void>
   /** Atomically delete records that still match the caller's observations. */
-  deleteRecordsIfUnchanged(
-    collection: string,
-    records: readonly StoredRecord[],
-  ): Promise<string[]>
+  deleteRecordsIfUnchanged(collection: string, records: readonly StoredRecord[]): Promise<string[]>
   clearCollection(collection: string): Promise<void>
   clearAll(): Promise<void>
   close?(): void
@@ -51,6 +48,53 @@ export type WebStorageLike = {
   getItem(key: string): string | null
   setItem(key: string, value: string): void
   removeItem(key: string): void
+}
+
+/** Complete local persistence configuration activated by `client.hydrate()`. */
+export type SyncStorageAdapter = {
+  /** Stable namespace for local keys, IndexedDB, and cross-tab notifications. */
+  namespace: string
+  /** Custom account and collection storage. Defaults to IndexedDB for the namespace. */
+  storage?: SyncStorage
+  /** Custom device storage. Defaults to browser localStorage or memory. */
+  localStorage?: WebStorageLike
+  /** Custom session storage. Defaults to browser sessionStorage or memory. */
+  sessionStorage?: WebStorageLike
+  /** Custom IndexedDB factory used when `storage` is omitted. */
+  indexedDB?: IDBFactory
+  /** Whether this context participates in cross-tab notifications. Defaults to true. */
+  broadcast?: boolean
+}
+
+/** Create an isolated, non-broadcasting local persistence adapter. */
+export function createMemoryStorageAdapter(options?: {
+  namespace?: string
+  account?: StoredAccount
+  collections?: Record<string, StoredRecord[]>
+  device?: JsonRecord
+  session?: JsonRecord
+}): SyncStorageAdapter {
+  const namespace = options?.namespace ?? 'memory'
+  const localStorage = createMemoryWebStorage()
+  const sessionStorage = createMemoryWebStorage()
+
+  if (options?.device) {
+    localStorage.setItem(storageKey(namespace, 'device'), JSON.stringify(options.device))
+  }
+  if (options?.session) {
+    sessionStorage.setItem(storageKey(namespace, 'session'), JSON.stringify(options.session))
+  }
+
+  return {
+    namespace,
+    storage: createMemorySyncStorage({
+      account: options?.account,
+      collections: options?.collections,
+    }),
+    localStorage,
+    sessionStorage,
+    broadcast: false,
+  }
 }
 
 /** Create an in-memory Web Storage replacement for tests and non-browser runtimes. */
@@ -76,10 +120,7 @@ export function createMemorySyncStorage(initial?: {
   const collections = new Map<string, Map<string, StoredRecord>>()
 
   for (const [collection, records] of Object.entries(initial?.collections ?? {})) {
-    collections.set(
-      collection,
-      new Map(records.map((record) => [record.id, clone(record)])),
-    )
+    collections.set(collection, new Map(records.map((record) => [record.id, clone(record)])))
   }
 
   const getCollection = (collection: string) => {
@@ -193,7 +234,10 @@ export function createIndexedDbSyncStorage(options: {
     },
     close() {
       if (dbPromise) {
-        dbPromise.then((db) => db.close(), () => {})
+        dbPromise.then(
+          (db) => db.close(),
+          () => {},
+        )
         dbPromise = undefined
       }
     },
@@ -202,6 +246,10 @@ export function createIndexedDbSyncStorage(options: {
 
 function collectionStore(collection: string) {
   return `collection:${collection}`
+}
+
+function storageKey(namespace: string, kind: 'device' | 'session') {
+  return `valtio-sync:${namespace}:${kind}`
 }
 
 async function openDatabase(
@@ -252,15 +300,9 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
   })
 }
 
-async function readFromStore<T>(
-  db: IDBDatabase,
-  store: string,
-  key: string,
-): Promise<T | null> {
+async function readFromStore<T>(db: IDBDatabase, store: string, key: string): Promise<T | null> {
   const transaction = db.transaction(store, 'readonly')
-  const value = await requestToPromise<T | undefined>(
-    transaction.objectStore(store).get(key),
-  )
+  const value = await requestToPromise<T | undefined>(transaction.objectStore(store).get(key))
   await transactionDone(transaction)
   return clone(value ?? null)
 }
@@ -276,11 +318,7 @@ async function writeToStore(
   await transactionDone(transaction)
 }
 
-async function deleteFromStore(
-  db: IDBDatabase,
-  store: string,
-  key: string,
-): Promise<void> {
+async function deleteFromStore(db: IDBDatabase, store: string, key: string): Promise<void> {
   const transaction = db.transaction(store, 'readwrite')
   transaction.objectStore(store).delete(key)
   await transactionDone(transaction)

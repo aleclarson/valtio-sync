@@ -1,10 +1,5 @@
 import { describe, expect, test, vi } from 'vitest'
-import {
-  createMemorySyncStorage,
-  createMemoryWebStorage,
-  type SyncRequest,
-  valtioSync,
-} from 'valtio-sync/client'
+import { createMemoryStorageAdapter, type SyncRequest, valtioSync } from 'valtio-sync/client'
 import { defineAccount, defineCollection } from 'valtio-sync/schema'
 import { z } from 'zod'
 
@@ -26,10 +21,8 @@ let namespaceId = 0
 
 describe('todo sync', () => {
   test('tracks a local create before sync', async () => {
-    const sync = makeTestSync()
+    const sync = await makeTestSync()
     try {
-      await sync.ready
-
       sync.todos.create({ id: 'todo_1', title: 'Draft' })
       // Flush makes batched local writes deterministic before reading debug
       // state. It is usually the right boundary for unit tests.
@@ -55,10 +48,8 @@ describe('todo sync', () => {
   test('flushes batched proxy writes with fake timers', async () => {
     vi.useFakeTimers()
 
-    const sync = makeTestSync()
+    const sync = await makeTestSync()
     try {
-      await sync.ready
-
       sync.todos.create({ id: 'todo_1', title: 'Draft' })
       await sync.sync()
 
@@ -85,18 +76,15 @@ describe('todo sync', () => {
   })
 })
 
-function makeTestSync() {
+async function makeTestSync() {
   let serverVersion = 0
 
   // Memory-backed storage keeps tests isolated from IndexedDB, localStorage,
   // sessionStorage, and cross-test namespace reuse.
-  return valtioSync({
+  const sync = valtioSync({
     endpoint: '/api/sync',
-    namespace: `test:${++namespaceId}`,
     schema: { account, todos },
-    storage: createMemorySyncStorage(),
-    localStorage: createMemoryWebStorage(),
-    sessionStorage: createMemoryWebStorage(),
+    storage: createMemoryStorageAdapter({ namespace: `test:${++namespaceId}` }),
     fetch: async (_input, init) => {
       const request = JSON.parse(String(init?.body)) as SyncRequest
 
@@ -116,6 +104,8 @@ function makeTestSync() {
       })
     },
   })
+  await sync.hydrate()
+  return sync
 }
 
 function getSyncedValue(op: SyncRequest['ops'][number]) {

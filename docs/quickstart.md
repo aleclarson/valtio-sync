@@ -36,8 +36,8 @@ import { z } from 'zod'
 
 export const sync = valtioSync({
   endpoint: '/api/sync',
-  namespace: `my-app:${user.id}`,
   schema: { account, todos },
+  storage: { namespace: `my-app:${user.id}` },
   device: {
     deviceId: z.string().default(() => crypto.randomUUID()),
   },
@@ -46,7 +46,7 @@ export const sync = valtioSync({
   },
 })
 
-await sync.ready
+await sync.hydrate()
 ```
 
 Mutate the returned Valtio proxies directly:

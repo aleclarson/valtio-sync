@@ -3,8 +3,8 @@
 The package should expose client and server factories with the same name from separate entry points:
 
 ```ts
-import { valtioSync } from "valtio-sync/client";
-import { valtioSync } from "valtio-sync/server";
+import { valtioSync } from 'valtio-sync/client'
+import { valtioSync } from 'valtio-sync/server'
 ```
 
 Both functions are named `valtioSync()`, but they live in different modules and serve different sides of the protocol.
@@ -16,29 +16,30 @@ Schemas should be defined outside the client instance so they can be shared by t
 Recommended shape:
 
 ```ts
-import { defineAccount, defineCollection } from "valtio-sync/schema";
+import { defineAccount, defineCollection } from 'valtio-sync/schema'
 
 export const account = defineAccount({
   fields: {
-    theme: z.enum(["light", "dark"]).default("light"),
+    theme: z.enum(['light', 'dark']).default('light'),
   },
-});
+})
 
 export const todos = defineCollection({
   fields: {
     id: z.string(),
-    title: z.string().default(""),
+    title: z.string().default(''),
   },
-});
+})
 ```
 
 The client then imports those shared definitions:
 
 ```ts
-import { valtioSync } from "valtio-sync/client";
+import { valtioSync } from 'valtio-sync/client'
 
 export const vs = valtioSync({
-  endpoint: "/api/sync",
+  endpoint: '/api/sync',
+  storage: { namespace: `my-app:${user.id}` },
   schema: {
     account,
     todos,
@@ -49,7 +50,7 @@ export const vs = valtioSync({
   session: {
     sidebarOpen: z.boolean(),
   },
-});
+})
 ```
 
 This split keeps shared client/server schema imports clean.
@@ -68,7 +69,9 @@ The exact exported inference helper can evolve, but inferred record types should
 
 ## Client Factory
 
-The client factory should receive the sync endpoint, shared synced schema definitions, optional local-only device/session schemas, optional fetch override, and local migrations.
+The client factory should receive the sync endpoint, shared synced schema definitions, a default
+storage adapter, optional local-only device/session schemas, optional fetch override, and local
+migrations.
 
 The `device` and `session` schemas are plain field objects, not explicit `z.object(...)` declarations. They are made strict internally.
 
@@ -94,10 +97,7 @@ Client factory example:
 
 ```ts
 const vs = valtioSync({
-  endpoint: "/api/sync",
-
-  namespace: `my-app:${user.id}`,
-
+  endpoint: '/api/sync',
   schema: {
     account,
     todos,
@@ -115,12 +115,15 @@ const vs = valtioSync({
   },
 
   fetch: customFetch,
+  storage: { namespace: `my-app:${user.id}` },
 
   migrations: {
     2: migrateV1ToV2,
     3: migrateV2ToV3,
   },
-});
+})
+
+await vs.hydrate()
 ```
 
 Collection definition example:
@@ -129,34 +132,34 @@ Collection definition example:
 export const todos = defineCollection({
   fields: {
     id: z.string(),
-    title: z.string().default(""),
+    title: z.string().default(''),
     completed: z.boolean().default(false),
   },
-});
+})
 ```
 
 The optional Drizzle entry point should provide equivalent wrappers that accept
 a compile-time database type marker:
 
 ```ts
-import { $type, defineAccount, defineCollection } from "valtio-sync/drizzle";
-import { accountTable, todosTable } from "./db/schema";
+import { $type, defineAccount, defineCollection } from 'valtio-sync/drizzle'
+import { accountTable, todosTable } from './db/schema'
 
 export const account = defineAccount({
   dbType: $type<typeof accountTable>(),
   fields: {
-    theme: z.enum(["light", "dark"]).default("light"),
+    theme: z.enum(['light', 'dark']).default('light'),
   },
-});
+})
 
 export const todos = defineCollection({
   dbType: $type<typeof todosTable>(),
   fields: {
     id: z.string(),
-    title: z.string().default(""),
+    title: z.string().default(''),
     completed: z.boolean().default(false),
   },
-});
+})
 ```
 
 Recommended collection API:
@@ -183,23 +186,26 @@ The collection should expose an explicit `records` property instead of making th
 Recommended collection surface:
 
 ```ts
-vs.todos.records; // Valtio proxy object keyed by id
-vs.todos.create;
-vs.todos.update;
-vs.todos.delete;
-vs.todos.get;
-vs.todos.list;
-vs.todos.flush;
-vs.todos.sync;
-vs.todos.pruneLocal;
+vs.todos.records // Valtio proxy object keyed by id
+vs.todos.create
+vs.todos.update
+vs.todos.delete
+vs.todos.get
+vs.todos.list
+vs.todos.flush
+vs.todos.sync
+vs.todos.pruneLocal
 ```
 
 `pruneLocal` is explicit local cache maintenance. It accepts application-selected IDs, never emits delete mutations, and refuses to remove locally actionable records. Retention policy does not belong on platform-agnostic collection definitions shared with the server.
 
-The client also exposes `vs.ready`, a promise that resolves after local device/session state, IndexedDB cache, migrations, validation, and proxy hydration complete.
+The client requires a default storage adapter but remains persistence-free during construction.
+Argument-free `vs.hydrate()` activates that default; `vs.hydrate(adapter)` replaces it, and another
+argument-free call returns to the default. Hydration loads device/session state and the IndexedDB
+cache, runs migrations and validation, and publishes fresh state objects.
 
 The client exposes scoped request-level transport interception. An interceptor receives a
 `SyncRequest` and the next transport, and may pass through or modify the request, return a
 replacement `SyncResponse`, or return `null` to drop the attempt. Interception does not alter the
-local mutation lifecycle; isolated development scenarios should use their own client lifetime and
-namespace and must not later reconnect that client to a real authenticated transport.
+local mutation lifecycle. Isolated development scenarios should combine a temporary memory adapter
+with write-blocking transport interception and hydrate the default before removing protection.

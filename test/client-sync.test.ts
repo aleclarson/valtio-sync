@@ -1,7 +1,11 @@
 import { z } from 'zod'
-import { valtioSync } from '../src/client.js'
+import { preventRemoteWrites, valtioSync } from '../src/client.js'
 import { defineAccount, defineCollection } from '../src/schema.js'
-import { type StoredRecord, createMemorySyncStorage } from '../src/storage.js'
+import {
+  type StoredRecord,
+  createMemoryStorageAdapter,
+  createMemorySyncStorage,
+} from '../src/storage.js'
 
 const account = defineAccount({
   fields: {
@@ -72,7 +76,7 @@ test('accepted create applies canonical record and clears dirty state', async ()
   const vs = valtioSync({
     endpoint: '/api/sync',
     schema: { account, todos },
-    storage: createMemorySyncStorage(),
+    storage: createMemoryStorageAdapter(),
     fetch: async (input, init) => {
       const request = JSON.parse(String(init?.body))
       const response = await fetchSync(input, init)
@@ -81,7 +85,11 @@ test('accepted create applies canonical record and clears dirty state', async ()
       return jsonResponse(body)
     },
   })
-  await vs.ready
+  await vs.hydrate({
+    namespace: 'accepted-create',
+    storage: createMemorySyncStorage(),
+    broadcast: false,
+  })
 
   vs.todos.create({ id: 'todo_1', title: 'Local' })
   await vs.sync()
@@ -119,10 +127,14 @@ test('rejected validation keeps optimistic value and stops retrying', async () =
   const vs = valtioSync({
     endpoint: '/api/sync',
     schema: { account, todos },
-    storage: createMemorySyncStorage(),
+    storage: createMemoryStorageAdapter(),
     fetch: fetchSync,
   })
-  await vs.ready
+  await vs.hydrate({
+    namespace: 'rejected-validation',
+    storage: createMemorySyncStorage(),
+    broadcast: false,
+  })
 
   vs.todos.create({ id: 'todo_1', title: 'Optimistic' })
   await vs.sync()
@@ -163,14 +175,18 @@ test('rejected conflict keeps optimistic value and records conflict metadata', a
   const vs = valtioSync({
     endpoint: '/api/sync',
     schema: { account, todos },
+    storage: createMemoryStorageAdapter(),
+    fetch: fetchSync,
+  })
+  await vs.hydrate({
+    namespace: 'rejected-conflict',
     storage: createMemorySyncStorage({
       collections: {
         todos: [makeStoredTodo('todo_1', 'Base')],
       },
     }),
-    fetch: fetchSync,
+    broadcast: false,
   })
-  await vs.ready
 
   vs.todos.update('todo_1', { title: 'Local' })
   await vs.sync()
@@ -193,12 +209,16 @@ test('network failure preserves dirty record for a later retry', async () => {
   const vs = valtioSync({
     endpoint: '/api/sync',
     schema: { account, todos },
-    storage: createMemorySyncStorage(),
+    storage: createMemoryStorageAdapter(),
     fetch: async () => {
       throw new Error('offline')
     },
   })
-  await vs.ready
+  await vs.hydrate({
+    namespace: 'network-failure',
+    storage: createMemorySyncStorage(),
+    broadcast: false,
+  })
 
   vs.todos.create({ id: 'todo_1', title: 'Local' })
   await vs.sync()
@@ -221,10 +241,14 @@ test('auth transport failures remain paused without automatic retry', async () =
   const vs = valtioSync({
     endpoint: '/api/sync',
     schema: { account, todos },
-    storage: createMemorySyncStorage(),
+    storage: createMemoryStorageAdapter(),
     fetch: fetchSync,
   })
-  await vs.ready
+  await vs.hydrate({
+    namespace: 'auth-failure',
+    storage: createMemorySyncStorage(),
+    broadcast: false,
+  })
 
   vs.todos.create({ id: 'todo_1', title: 'Local' })
   await vs.sync()
@@ -261,10 +285,14 @@ test('transport interceptor drops a scheduled retry without clearing pending wri
   const vs = valtioSync({
     endpoint: '/api/sync',
     schema: { account, todos },
-    storage: createMemorySyncStorage(),
+    storage: createMemoryStorageAdapter(),
     fetch: fetchSync,
   })
-  await vs.ready
+  await vs.hydrate({
+    namespace: 'intercept-retry',
+    storage: createMemorySyncStorage(),
+    broadcast: false,
+  })
 
   vs.todos.create({ id: 'todo_1', title: 'Local' })
   await vs.sync()
@@ -292,10 +320,14 @@ test('transport interceptor can replace a sync response without calling fetch', 
   const vs = valtioSync({
     endpoint: '/api/sync',
     schema: { account, todos },
-    storage: createMemorySyncStorage(),
+    storage: createMemoryStorageAdapter(),
     fetch: fetchSync,
   })
-  await vs.ready
+  await vs.hydrate({
+    namespace: 'intercept-response',
+    storage: createMemorySyncStorage(),
+    broadcast: false,
+  })
 
   vs.interceptTransport(() => ({
     serverSeq: 3,
@@ -331,7 +363,7 @@ test('transport interceptor can omit writes while passing remote reads through',
   const vs = valtioSync({
     endpoint: '/api/sync',
     schema: { account, todos },
-    storage: createMemorySyncStorage(),
+    storage: createMemoryStorageAdapter(),
     fetch: async (_input, init) => {
       requests.push(JSON.parse(String(init?.body)))
       return jsonResponse({
@@ -357,10 +389,14 @@ test('transport interceptor can omit writes while passing remote reads through',
       })
     },
   })
-  await vs.ready
+  await vs.hydrate({
+    namespace: 'prevent-writes',
+    storage: createMemorySyncStorage(),
+    broadcast: false,
+  })
 
   vs.todos.create({ id: 'todo_local', title: 'Keep pending' })
-  vs.interceptTransport((request, next) => next({ ...request, ops: [] }))
+  vs.interceptTransport(preventRemoteWrites)
   await vs.sync()
 
   expect(requests).toMatchObject([{ ops: [] }])
@@ -375,7 +411,7 @@ test('remote changes apply to clean records', async () => {
   const vs = valtioSync({
     endpoint: '/api/sync',
     schema: { account, todos },
-    storage: createMemorySyncStorage(),
+    storage: createMemoryStorageAdapter(),
     fetch: async () =>
       jsonResponse({
         serverSeq: 2,
@@ -399,7 +435,11 @@ test('remote changes apply to clean records', async () => {
         },
       }),
   })
-  await vs.ready
+  await vs.hydrate({
+    namespace: 'remote-clean',
+    storage: createMemorySyncStorage(),
+    broadcast: false,
+  })
 
   await vs.sync()
 
@@ -419,7 +459,7 @@ test('snapshot changes remove absent clean records and preserve dirty records', 
   const vs = valtioSync({
     endpoint: '/api/sync',
     schema: { account, todos },
-    storage,
+    storage: createMemoryStorageAdapter(),
     fetch: async () =>
       jsonResponse({
         serverSeq: 5,
@@ -444,7 +484,7 @@ test('snapshot changes remove absent clean records and preserve dirty records', 
         },
       }),
   })
-  await vs.ready
+  await vs.hydrate({ namespace: 'snapshot', storage, broadcast: false })
 
   vs.todos.update('todo_dirty', { title: 'Local' })
   await vs.sync()
@@ -468,7 +508,7 @@ test('remote changes conflict with dirty records under rejectStale', async () =>
   const vs = valtioSync({
     endpoint: '/api/sync',
     schema: { account, todos },
-    storage,
+    storage: createMemoryStorageAdapter(),
     fetch: async () =>
       jsonResponse({
         serverSeq: 3,
@@ -492,7 +532,7 @@ test('remote changes conflict with dirty records under rejectStale', async () =>
         },
       }),
   })
-  await vs.ready
+  await vs.hydrate({ namespace: 'remote-conflict', storage, broadcast: false })
 
   vs.todos.update('todo_1', { title: 'Local' })
   await vs.sync()

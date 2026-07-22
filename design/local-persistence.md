@@ -2,9 +2,12 @@
 
 The local database is a durable SWR cache plus optimistic local writes.
 
-The client should expose state quickly from local cache. Remote sync should not block initial render.
+The client should expose inert schema defaults immediately and hydrate local cache explicitly.
+Applications must not treat the pre-hydration state as authoritative. Remote sync should not block
+hydration.
 
-The implemented client exposes `vs.ready` for code that needs to wait until local hydration, migration, and validation are complete.
+The implemented client requires a default adapter but performs no persistence work during
+construction. Applications call and await `vs.hydrate()` before enabling persisted interactions.
 
 ## Storage Responsibilities
 
@@ -34,16 +37,17 @@ collection:projects
 Use a local-first boot lifecycle:
 
 ```txt
-1. create proxies with defaults
-2. load device from localStorage
-3. load session from sessionStorage
-4. open IndexedDB
-5. read account + collection caches
-6. run local migrations if needed
-7. validate cached data
-8. hydrate proxies without mutation tracking
-9. mark client as hydrated
-10. optionally start background sync
+1. expose inert defaults and empty collection placeholders without opening storage
+2. application calls `hydrate()` to activate the constructor-provided default adapter
+3. load device from localStorage
+4. load session from sessionStorage
+5. open IndexedDB
+6. read account + collection caches
+7. run local migrations if needed
+8. validate cached data
+9. hydrate proxies without mutation tracking
+10. publish fresh proxies and mark the client `ready`
+11. optionally start background sync
 ```
 
 Internal framework writes, such as hydration, refetch, or acknowledgement application, must not themselves create dirty mutations.
@@ -113,7 +117,7 @@ Anonymous usage should use a stable local namespace, such as:
 my-app:anon:<anonymous-id>
 ```
 
-After signup creates an authenticated account, the app should create a client for the new account namespace:
+After signup creates an authenticated account, the app should hydrate the account's storage namespace:
 
 ```txt
 my-app:user:<user-id>
@@ -174,13 +178,13 @@ Recommended status object:
 
 ```ts
 vs.status = proxy({
-  hydrated: false,
+  phase: 'cold',
   syncing: false,
   dirty: false,
   online: true,
   lastSyncAt: null,
   lastError: null,
-});
+})
 ```
 
 Migration config:
@@ -204,24 +208,26 @@ Namespace config:
 
 ```ts
 const vs = valtioSync({
-  endpoint: "/api/sync",
-  namespace: `my-app:${user.id}`,
+  endpoint: '/api/sync',
   schema,
+  storage: { namespace: `my-app:${user.id}` },
   device,
   session,
-});
+})
+
+await vs.hydrate()
 ```
 
 Clearing APIs:
 
 ```ts
-await vs.clearLocalData();
-await vs.clearCollection(todos);
-await vs.reset();
+await vs.clearLocalData()
+await vs.clearCollection(todos)
+await vs.reset()
 ```
 
 ```ts
 const report = await vs.todos.pruneLocal(candidateIds, {
   dryRun: true,
-});
+})
 ```

@@ -83,19 +83,20 @@ Keep debug helpers behind a `debug` namespace so the main API stays clean.
 Recommended debug API:
 
 ```ts
-vs.flush();
-vs.sync();
+vs.flush()
+vs.sync()
 
-vs.debug.getStatus();
-vs.debug.getDirtyRecords();
-vs.debug.getPendingOps();
-vs.debug.getRecordMeta(collection, id);
-vs.debug.getLastSyncRequest();
-vs.debug.getLastSyncResponse();
-vs.debug.clearLocalData();
+vs.debug.getStatus()
+vs.debug.getDirtyRecords()
+vs.debug.getPendingOps()
+vs.debug.getRecordMeta(collection, id)
+vs.debug.getLastSyncRequest()
+vs.debug.getLastSyncResponse()
+vs.debug.clearLocalData()
 ```
 
-The implemented client exposes these debug helpers through `vs.debug`, with `vs.ready` as the local hydration barrier.
+The implemented client exposes these debug helpers through `vs.debug`, with explicit awaited
+`vs.hydrate()` as the default local hydration barrier.
 
 Prioritize deterministic sync tests.
 

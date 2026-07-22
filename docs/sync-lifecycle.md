@@ -58,11 +58,11 @@ response, clear dirty operations, or schedule another retry. Likewise, stripping
 calling the remote transport leaves those local operations pending. If the interceptor is later
 removed, a normal `sync()` may send them.
 
-Use a scenario-only client and dedicated development namespace when intercepted fixture state must
-never mix with a real account, and never reconnect that client to the authenticated production
-transport. The namespace isolates browser persistence but is not sent as server authentication.
-Transport interception changes communication behavior; it deliberately does not change the normal
-local persistence and mutation lifecycle.
+Use `preventRemoteWrites` with a temporary memory storage adapter when fixture state must never mix
+with a real account. The interceptor strips operations but passes the pull request through, while
+the memory adapter isolates the normal local persistence and mutation lifecycle. Hydrate the
+constructor-provided default adapter again before removing the interceptor. A storage namespace is
+not sent as server authentication.
 
 ## Choosing Sync Triggers
 
@@ -71,7 +71,7 @@ triggers include startup after authentication, important save actions, reconnect
 visible tab, and a periodic timer while the app is active.
 
 ```ts
-await sync.ready
+await sync.hydrate()
 await sync.sync()
 
 const syncWhenOnline = () => void sync.sync()
