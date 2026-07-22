@@ -162,6 +162,8 @@ export type SyncStorage = {
   clearAll(): Promise<void>;
   close?(): void;
 };
+export type SyncTransport = (_: SyncRequest) => SyncResponse | null | Promise<SyncResponse | null>;
+export type SyncTransportInterceptor = (_: SyncRequest, _: SyncTransport) => ReturnType<SyncTransport>;
 export type UpdateSyncOp = {
   mutationId: string;
   collection: string;
@@ -179,6 +181,7 @@ export type ValtioSyncClient<TSchema extends SyncSchema = SyncSchema> = Collecti
   readonly ready: Promise<void>;
   flush(): Promise<void>;
   sync(): Promise<void>;
+  interceptTransport(_: SyncTransportInterceptor): () => void;
   adoptLocalData(_: ValtioSyncClient, _?: AdoptLocalDataOptions): Promise<void>;
   clearLocalData(): Promise<void>;
   clearCollection(_: SyncedCollection): Promise<void>;

@@ -30,6 +30,7 @@ The returned object exposes:
 - `ready`: hydration promise.
 - `flush()`: wait for pending local writes and recompute pending ops.
 - `sync()`: flush and POST pending ops to the configured endpoint.
+- `interceptTransport(interceptor)`: intercept protocol requests before they reach `fetch`.
 - `adoptLocalData(source, options)`: copy local synced state from another client, usually from an anonymous namespace into a new authenticated namespace.
 - `clearLocalData()` and `reset()`: clear local sync, device, and session state.
 - `clearCollection(collection)`: clear one collection from local storage.
@@ -58,6 +59,56 @@ Local persistence is automatic, but remote sync starts only when the application
 Failed network syncs retry automatically; creating dirty state alone does not schedule a remote
 request. See [Sync Lifecycle](sync-lifecycle.md) for the complete timing, retry, and freshness
 model.
+
+## Transport Interception
+
+`interceptTransport()` installs scoped middleware around future sync attempts. The interceptor
+receives the complete protocol request and a `next` transport function:
+
+```ts
+const removeInterceptor = sync.interceptTransport((request, next) => {
+  if (developmentScenarioActive) {
+    return fixtureTransport(request)
+  }
+  return next(request)
+})
+
+// Later:
+removeInterceptor()
+```
+
+An interceptor can:
+
+- call `next(request)` to pass through;
+- call `next({ ...request, ops: [] })` with a modified request to allow remote reads without
+  sending local writes;
+- return a synthetic `SyncResponse` to replace remote reads and acknowledgements; or
+- return `null` to drop the entire attempt without treating it as a transport failure.
+
+Dropping or removing writes from a request does not clear their dirty metadata. They remain in
+local persistence and can be uploaded by a later unintercepted sync. Returning a synthetic
+acknowledgement processes it exactly like a server acknowledgement and may clear matching dirty
+operations.
+
+For launchable development fixtures, create a scenario-only client with a namespace that can
+never identify a real account:
+
+```ts
+const sync = valtioSync({
+  endpoint: '/api/sync',
+  namespace: `my-app:scenario:${scenarioId}`,
+  schema: { account, todos },
+})
+```
+
+This keeps ordinary local persistence and mutation behavior realistic without rehydrating fixture
+state into the real account's namespace. Keep the interceptor installed for that client's entire
+lifetime, then close or clear the scenario client; do not remove it and reuse that client against
+an authenticated real endpoint. A namespace isolates local storage, not server authentication, so
+an unintercepted request could still upload pending fixture operations.
+
+Installing or removing an interceptor affects future sync attempts; an already running request
+keeps the interceptor chain with which it started. The returned removal function is idempotent.
 
 ## Bounded Local Replicas
 

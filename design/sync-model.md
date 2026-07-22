@@ -61,6 +61,13 @@ default. Snapshot changes are authoritative for clean local collection records,
 which lets servers prune old event rows and fall back to a full snapshot when a
 client's cursor is older than the retained event floor.
 
+## Transport Interception
+
+Request-level interceptors sit between `sync()` and the built-in HTTP transport. They may modify
+or drop a request, or replace its response, without changing how local mutations are tracked and
+persisted. A dropped attempt leaves the cursor and dirty state unchanged. This boundary supports
+tests and isolated development scenarios without introducing alternate client semantics.
+
 ## Local Cache Pruning
 
 Local retention is separate from pull semantics. Explicit pruning evicts selected server-clean records without changing `lastServerSeq`, so ordinary pulls remain incremental. It is neither a sync response capability nor a delete op: the server returns synchronization facts, while applications own their cached subset.

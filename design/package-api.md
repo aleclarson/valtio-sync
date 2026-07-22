@@ -197,3 +197,9 @@ vs.todos.pruneLocal;
 `pruneLocal` is explicit local cache maintenance. It accepts application-selected IDs, never emits delete mutations, and refuses to remove locally actionable records. Retention policy does not belong on platform-agnostic collection definitions shared with the server.
 
 The client also exposes `vs.ready`, a promise that resolves after local device/session state, IndexedDB cache, migrations, validation, and proxy hydration complete.
+
+The client exposes scoped request-level transport interception. An interceptor receives a
+`SyncRequest` and the next transport, and may pass through or modify the request, return a
+replacement `SyncResponse`, or return `null` to drop the attempt. Interception does not alter the
+local mutation lifecycle; isolated development scenarios should use their own client lifetime and
+namespace and must not later reconnect that client to a real authenticated transport.

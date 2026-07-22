@@ -87,6 +87,17 @@ export type AdoptLocalDataOptions = {
   clearSource?: 'never' | 'afterSuccessfulSync'
 }
 
+/** Request-level sync transport used by transport interceptors. Returning null drops the attempt. */
+export type SyncTransport = (
+  request: SyncRequest,
+) => SyncResponse | null | Promise<SyncResponse | null>
+
+/** Scoped middleware that can pass through, replace, modify, or drop sync transport calls. */
+export type SyncTransportInterceptor = (
+  request: SyncRequest,
+  next: SyncTransport,
+) => ReturnType<SyncTransport>
+
 /** Reactive client status flags and the latest sync error. */
 export type ValtioSyncStatus = {
   hydrated: boolean
@@ -140,6 +151,7 @@ const clientPropertyKeys = [
   'ready',
   'flush',
   'sync',
+  'interceptTransport',
   'adoptLocalData',
   'clearLocalData',
   'clearCollection',
@@ -172,6 +184,7 @@ export type ValtioSyncClient<TSchema extends SyncSchema = SyncSchema> = Collecti
   readonly ready: Promise<void>
   flush(): Promise<void>
   sync(): Promise<void>
+  interceptTransport(interceptor: SyncTransportInterceptor): () => void
   adoptLocalData(source: ValtioSyncClient, options?: AdoptLocalDataOptions): Promise<void>
   clearLocalData(): Promise<void>
   clearCollection(collection: SyncedCollection): Promise<void>
@@ -322,6 +335,18 @@ export function valtioSync<
   let retryAttempt = 0
   let writeQueue = Promise.resolve()
   let reconciliationQueue = Promise.resolve()
+  const transportInterceptors: Array<{ interceptor: SyncTransportInterceptor }> = []
+  class SyncTransportError extends Error {
+    readonly reason: 'auth' | 'network'
+
+    constructor(
+      reason: 'auth' | 'network',
+      message: string,
+    ) {
+      super(message)
+      this.reason = reason
+    }
+  }
 
   const internals: ClientInternals = {
     accountKey: String(accountKey),
@@ -579,16 +604,6 @@ export function valtioSync<
       return
     }
 
-    const fetchSync = options.fetch ?? globalThis.fetch
-    if (!fetchSync) {
-      setStatusError(status, {
-        reason: 'network',
-        message: 'No fetch implementation is available for valtio-sync',
-      })
-      scheduleRetry()
-      return
-    }
-
     const request: SyncRequest = {
       clientId: currentDeviceId(device),
       schemaVersion,
@@ -600,33 +615,17 @@ export function valtioSync<
     status.syncing = true
 
     try {
-      const response = await fetchSync(options.endpoint, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify(request),
-      })
-
-      if (!response.ok) {
-        const message = await response.text().catch(() => response.statusText)
-        if (response.status === 401 || response.status === 403) {
-          setStatusError(status, {
-            reason: 'auth',
-            message: message || response.statusText,
-          })
-          return
-        }
-
-        setStatusError(status, {
-          reason: 'network',
-          message: message || response.statusText,
-        })
-        scheduleRetry()
+      const transport = transportInterceptors.reduceRight<SyncTransport>(
+        (next, registration) => (nextRequest) =>
+          registration.interceptor(nextRequest, next),
+        sendSyncRequest,
+      )
+      const interceptedResponse = await transport(request)
+      if (interceptedResponse === null) {
         return
       }
 
-      const syncResponse = parseSyncResponse(await response.json())
+      const syncResponse = parseSyncResponse(interceptedResponse)
       internals.lastSyncResponse = syncResponse
       status.lastError = null
       await enqueueReconciliation(() => applySyncResponse(syncResponse, request.ops))
@@ -646,15 +645,66 @@ export function valtioSync<
       }
       status.lastSyncAt = Date.now()
     } catch (error) {
+      const reason = error instanceof SyncTransportError ? error.reason : 'network'
       setStatusError(status, {
-        reason: 'network',
+        reason,
         message: error instanceof Error ? error.message : 'Sync request failed',
       })
-      scheduleRetry()
+      if (reason !== 'auth') {
+        scheduleRetry()
+      }
     } finally {
       status.syncing = false
       refreshPendingOps(internals)
       status.dirty = internals.pendingOps.length > 0
+    }
+  }
+
+  async function sendSyncRequest(request: SyncRequest): Promise<SyncResponse> {
+    const fetchSync = options.fetch ?? globalThis.fetch
+    if (!fetchSync) {
+      throw new SyncTransportError(
+        'network',
+        'No fetch implementation is available for valtio-sync',
+      )
+    }
+
+    const response = await fetchSync(options.endpoint, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    })
+
+    if (!response.ok) {
+      const message = await response.text().catch(() => response.statusText)
+      throw new SyncTransportError(
+        response.status === 401 || response.status === 403 ? 'auth' : 'network',
+        message || response.statusText,
+      )
+    }
+
+    return parseSyncResponse(await response.json())
+  }
+
+  function interceptTransport(interceptor: SyncTransportInterceptor): () => void {
+    if (closed) {
+      throw new Error('Cannot intercept transport on a closed valtio-sync client')
+    }
+
+    const registration = { interceptor }
+    transportInterceptors.push(registration)
+    let removed = false
+    return () => {
+      if (removed) {
+        return
+      }
+      removed = true
+      const index = transportInterceptors.indexOf(registration)
+      if (index !== -1) {
+        transportInterceptors.splice(index, 1)
+      }
     }
   }
 
@@ -1522,6 +1572,7 @@ export function valtioSync<
     ready,
     flush,
     sync,
+    interceptTransport,
     adoptLocalData,
     clearLocalData,
     clearCollection,
@@ -1539,6 +1590,7 @@ export function valtioSync<
       for (const unsubscribe of subscriptions) {
         unsubscribe()
       }
+      transportInterceptors.length = 0
       channel?.close()
       storage.close?.()
     },

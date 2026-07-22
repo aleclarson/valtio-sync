@@ -46,6 +46,24 @@ state.
 Automatic retries begin only after an application-triggered sync attempt fails. Merely creating
 dirty local state does not schedule a remote request.
 
+## Intercepting the Transport
+
+`sync.interceptTransport()` wraps future protocol requests before the built-in HTTP transport.
+Interceptors can pass through or modify a `SyncRequest`, replace its `SyncResponse`, or return
+`null` to drop the attempt. A scheduled retry also passes through the currently installed
+interceptors, so a dropping interceptor prevents that retry from reaching the endpoint.
+
+A dropped attempt is not a success or failure: it does not advance the server cursor, apply a
+response, clear dirty operations, or schedule another retry. Likewise, stripping `ops` before
+calling the remote transport leaves those local operations pending. If the interceptor is later
+removed, a normal `sync()` may send them.
+
+Use a scenario-only client and dedicated development namespace when intercepted fixture state must
+never mix with a real account, and never reconnect that client to the authenticated production
+transport. The namespace isolates browser persistence but is not sent as server authentication.
+Transport interception changes communication behavior; it deliberately does not change the normal
+local persistence and mutation lifecycle.
+
 ## Choosing Sync Triggers
 
 Applications should choose triggers that match their durability and freshness needs. Common

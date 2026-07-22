@@ -99,3 +99,9 @@ const response = await syncServer.handle(
 ```
 
 Use `debug.getLastSyncRequest()` and `debug.getLastSyncResponse()` for end-to-end sync assertions.
+
+For fixture-driven UI scenarios, intercept the request-level transport rather than replacing the
+client. Return a synthetic sync response for fixture reads and writes, or `null` to drop an
+attempt. Always pair persistent fixtures with a scenario-only client and namespace, and keep the
+interceptor installed for that client's lifetime. Dropped writes remain locally dirty and may be
+sent if the client is later allowed to reach an authenticated endpoint.

@@ -215,6 +215,162 @@ test('network failure preserves dirty record for a later retry', async () => {
   vs.close()
 })
 
+test('auth transport failures remain paused without automatic retry', async () => {
+  vi.useFakeTimers()
+  const fetchSync = vi.fn(async () => new Response('Sign in again', { status: 401 }))
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemorySyncStorage(),
+    fetch: fetchSync,
+  })
+  await vs.ready
+
+  vs.todos.create({ id: 'todo_1', title: 'Local' })
+  await vs.sync()
+  await vi.advanceTimersByTimeAsync(60_000)
+
+  expect(fetchSync).toHaveBeenCalledTimes(1)
+  expect(vs.status.dirty).toBe(true)
+  expect(vs.status.lastError).toMatchObject({
+    reason: 'auth',
+    message: 'Sign in again',
+  })
+})
+
+test('transport interceptor drops a scheduled retry without clearing pending writes', async () => {
+  vi.useFakeTimers()
+  let failSync = true
+  const fetchSync = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if (failSync) {
+      throw new Error('offline')
+    }
+    const request = JSON.parse(String(init?.body))
+    return jsonResponse({
+      serverSeq: 1,
+      accepted: request.ops.map((op: Record<string, unknown>) => ({
+        mutationId: op.mutationId,
+        collection: op.collection,
+        id: op.id,
+        serverVersion: 1,
+      })),
+      rejected: [],
+      changes: {},
+    })
+  })
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemorySyncStorage(),
+    fetch: fetchSync,
+  })
+  await vs.ready
+
+  vs.todos.create({ id: 'todo_1', title: 'Local' })
+  await vs.sync()
+  expect(fetchSync).toHaveBeenCalledTimes(1)
+
+  const removeInterceptor = vs.interceptTransport(() => null)
+  await vi.advanceTimersByTimeAsync(60_000)
+
+  expect(fetchSync).toHaveBeenCalledTimes(1)
+  expect(vs.status.dirty).toBe(true)
+  expect(vs.debug.getPendingOps()).toMatchObject([
+    { collection: 'todos', type: 'create', id: 'todo_1' },
+  ])
+
+  removeInterceptor()
+  removeInterceptor()
+  failSync = false
+  await vs.sync()
+  expect(fetchSync).toHaveBeenCalledTimes(2)
+  expect(vs.status.dirty).toBe(false)
+})
+
+test('transport interceptor can replace a sync response without calling fetch', async () => {
+  const fetchSync = vi.fn()
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemorySyncStorage(),
+    fetch: fetchSync,
+  })
+  await vs.ready
+
+  vs.interceptTransport(() => ({
+    serverSeq: 3,
+    accepted: [],
+    rejected: [],
+    changes: {
+      todos: {
+        upserted: [
+          {
+            id: 'todo_fixture',
+            serverVersion: 3,
+            record: {
+              id: 'todo_fixture',
+              title: 'Fixture response',
+              completed: false,
+            },
+          },
+        ],
+        deleted: [],
+      },
+    },
+  }))
+
+  await vs.sync()
+
+  expect(fetchSync).not.toHaveBeenCalled()
+  expect(vs.todos.get('todo_fixture')).toMatchObject({ title: 'Fixture response' })
+  expect(vs.debug.getLastSyncResponse()).toMatchObject({ serverSeq: 3 })
+})
+
+test('transport interceptor can omit writes while passing remote reads through', async () => {
+  const requests: Array<{ ops: unknown[] }> = []
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemorySyncStorage(),
+    fetch: async (_input, init) => {
+      requests.push(JSON.parse(String(init?.body)))
+      return jsonResponse({
+        serverSeq: 4,
+        accepted: [],
+        rejected: [],
+        changes: {
+          todos: {
+            upserted: [
+              {
+                id: 'todo_remote',
+                serverVersion: 4,
+                record: {
+                  id: 'todo_remote',
+                  title: 'Remote read',
+                  completed: true,
+                },
+              },
+            ],
+            deleted: [],
+          },
+        },
+      })
+    },
+  })
+  await vs.ready
+
+  vs.todos.create({ id: 'todo_local', title: 'Keep pending' })
+  vs.interceptTransport((request, next) => next({ ...request, ops: [] }))
+  await vs.sync()
+
+  expect(requests).toMatchObject([{ ops: [] }])
+  expect(vs.todos.get('todo_remote')).toMatchObject({ title: 'Remote read' })
+  expect(vs.status.dirty).toBe(true)
+  expect(vs.debug.getPendingOps()).toMatchObject([
+    { collection: 'todos', type: 'create', id: 'todo_local' },
+  ])
+})
+
 test('remote changes apply to clean records', async () => {
   const vs = valtioSync({
     endpoint: '/api/sync',
