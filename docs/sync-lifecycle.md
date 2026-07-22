@@ -46,33 +46,6 @@ state.
 Automatic retries begin only after an application-triggered sync attempt fails. Merely creating
 dirty local state does not schedule a remote request.
 
-## Suspending Remote Synchronization
-
-`await sync.suspendSync()` starts a scoped local-only period and returns an async resume function.
-During the period, neither explicit `sync()` calls nor previously scheduled retries contact the
-endpoint. Account and collection interactions remain reactive in memory but are excluded from
-synced persistence and pending operations. Local-only `device` and `session` state continues its
-normal persistence behavior.
-
-When the final nested suspension resumes, account and collection proxies are restored from the
-durable state captured at the suspension boundary. Pre-existing dirty operations remain pending;
-changes made during suspension are discarded and cannot be uploaded by a later sync. A canceled
-network retry for that pre-existing dirty work is scheduled again only after restoration.
-
-```ts
-const resumeSync = await sync.suspendSync()
-try {
-  installDevelopmentFixture(sync)
-  await inspectFlow()
-} finally {
-  await resumeSync()
-}
-```
-
-The suspension starts after `suspendSync()` resolves, so callers should await it before applying
-fixture state. Resume is also asynchronous and should be awaited before ordinary synced work
-continues.
-
 ## Choosing Sync Triggers
 
 Applications should choose triggers that match their durability and freshness needs. Common
