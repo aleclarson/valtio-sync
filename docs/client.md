@@ -26,10 +26,11 @@ The returned object exposes:
 - one direct property for each named collection in the schema.
 - `device`: local-only proxy stored in `localStorage`.
 - `session`: local-only proxy stored in `sessionStorage`.
-- `status`: Valtio proxy with hydration, sync, dirty, online, and error state.
+- `status`: Valtio proxy with hydration, sync, suspension, dirty, online, and error state.
 - `ready`: hydration promise.
 - `flush()`: wait for pending local writes and recompute pending ops.
 - `sync()`: flush and POST pending ops to the configured endpoint.
+- `suspendSync()`: begin a scoped, local-only synced-state session and return its resume function.
 - `adoptLocalData(source, options)`: copy local synced state from another client, usually from an anonymous namespace into a new authenticated namespace.
 - `clearLocalData()` and `reset()`: clear local sync, device, and session state.
 - `clearCollection(collection)`: clear one collection from local storage.
@@ -58,6 +59,38 @@ Local persistence is automatic, but remote sync starts only when the application
 Failed network syncs retry automatically; creating dirty state alone does not schedule a remote
 request. See [Sync Lifecycle](sync-lifecycle.md) for the complete timing, retry, and freshness
 model.
+
+## Temporary Local-Only Scenarios
+
+Use `suspendSync()` for development fixtures or exploratory UI sessions that should exercise the
+real client without contacting the remote endpoint:
+
+```ts
+const resumeSync = await sync.suspendSync()
+
+sync.account.theme = 'dark'
+sync.todos.create({ id: 'fixture-todo', title: 'Inspect this flow' })
+await sync.sync() // no remote request while suspended
+
+await resumeSync()
+```
+
+While suspended, account and collection proxies remain reactive and collection helpers keep their
+normal validation and in-memory behavior. Their changes do not enter synced local persistence or
+the pending-op list. Explicit `sync()` calls are no-ops, and an already scheduled network retry is
+canceled. `device` and `session` remain local-only and continue to persist normally.
+
+The returned resume function is asynchronous and idempotent. On the final resume, the client
+rehydrates account and collection state from the durable pre-suspension snapshot. This discards
+fixture changes while preserving dirty work that existed before suspension, so a later `sync()`
+cannot upload the fixture state. Suspensions may be nested; synchronization resumes only after
+every scope has called its resume function. `status.syncSuspended` reports whether any scope is
+active. If suspension canceled a retry for older dirty work, retry scheduling resumes only after
+this safe restoration.
+
+Await `suspendSync()` before installing fixture state and await its resume function before
+continuing normal synced interactions. `adoptLocalData()` is rejected while synchronization is
+suspended because adoption intentionally creates durable pending operations.
 
 ## Bounded Local Replicas
 

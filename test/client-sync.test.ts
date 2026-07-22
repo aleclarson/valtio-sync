@@ -1,7 +1,11 @@
 import { z } from 'zod'
 import { valtioSync } from '../src/client.js'
 import { defineAccount, defineCollection } from '../src/schema.js'
-import { type StoredRecord, createMemorySyncStorage } from '../src/storage.js'
+import {
+  type StoredRecord,
+  createMemorySyncStorage,
+  createMemoryWebStorage,
+} from '../src/storage.js'
 
 const account = defineAccount({
   fields: {
@@ -213,6 +217,113 @@ test('network failure preserves dirty record for a later retry', async () => {
     },
   ])
   vs.close()
+})
+
+test('sync suspension blocks requests and discards suspended synced changes on resume', async () => {
+  vi.useFakeTimers()
+  const localStorage = createMemoryWebStorage()
+  let failSync = true
+  const requests: Array<{ ops: Array<Record<string, unknown>> }> = []
+  const fetchSync = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const request = JSON.parse(String(init?.body))
+    requests.push(request)
+    if (failSync) {
+      throw new Error('offline')
+    }
+    return jsonResponse({
+      serverSeq: 2,
+      accepted: request.ops.map((op: Record<string, unknown>, index: number) => ({
+        mutationId: op.mutationId,
+        collection: op.collection,
+        id: op.id,
+        serverVersion: index + 1,
+      })),
+      rejected: [],
+      changes: {},
+    })
+  })
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    namespace: 'suspension-test',
+    schema: { account, todos },
+    device: {
+      deviceId: z.string().default('device_1'),
+    },
+    storage: createMemorySyncStorage(),
+    localStorage,
+    fetch: fetchSync,
+  })
+  await vs.ready
+
+  vs.todos.create({ id: 'todo_baseline', title: 'Persisted baseline' })
+  await vs.sync()
+  expect(fetchSync).toHaveBeenCalledTimes(1)
+
+  const resumeSync = await vs.suspendSync()
+  expect(vs.status.syncSuspended).toBe(true)
+
+  vs.account.theme = 'dark'
+  vs.todos.records.todo_baseline.title = 'Fixture edit'
+  vs.todos.create({ id: 'todo_fixture', title: 'Fixture only' })
+  vs.device.deviceId = 'fixture_device'
+
+  expect(vs.account.theme).toBe('dark')
+  expect(vs.todos.get('todo_baseline')).toMatchObject({ title: 'Fixture edit' })
+  expect(vs.todos.get('todo_fixture')).toMatchObject({ title: 'Fixture only' })
+
+  await vs.sync()
+  await vi.advanceTimersByTimeAsync(60_000)
+  expect(fetchSync).toHaveBeenCalledTimes(1)
+
+  await resumeSync()
+  expect(vs.status.syncSuspended).toBe(false)
+  expect(vs.account.theme).toBe('light')
+  expect(vs.todos.get('todo_baseline')).toMatchObject({ title: 'Persisted baseline' })
+  expect(vs.todos.get('todo_fixture')).toBeUndefined()
+  expect(vs.device.deviceId).toBe('fixture_device')
+  expect(JSON.parse(String(localStorage.getItem('valtio-sync:suspension-test:device')))).toEqual({
+    deviceId: 'fixture_device',
+  })
+
+  failSync = false
+  await vi.advanceTimersByTimeAsync(60_000)
+  expect(fetchSync).toHaveBeenCalledTimes(2)
+  expect(requests[1].ops).toMatchObject([
+    {
+      collection: 'todos',
+      type: 'create',
+      id: 'todo_baseline',
+      value: {
+        title: 'Persisted baseline',
+      },
+    },
+  ])
+})
+
+test('nested sync suspensions restore synced state only after the final resume', async () => {
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemorySyncStorage({
+      collections: {
+        todos: [makeStoredTodo('todo_1', 'Durable')],
+      },
+    }),
+  })
+  await vs.ready
+
+  const resumeFirst = await vs.suspendSync()
+  const resumeSecond = await vs.suspendSync()
+  vs.todos.update('todo_1', { title: 'Temporary' })
+
+  await resumeFirst()
+  await resumeFirst()
+  expect(vs.status.syncSuspended).toBe(true)
+  expect(vs.todos.get('todo_1')).toMatchObject({ title: 'Temporary' })
+
+  await resumeSecond()
+  expect(vs.status.syncSuspended).toBe(false)
+  expect(vs.todos.get('todo_1')).toMatchObject({ title: 'Durable' })
 })
 
 test('remote changes apply to clean records', async () => {

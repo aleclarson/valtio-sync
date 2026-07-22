@@ -197,3 +197,8 @@ vs.todos.pruneLocal;
 `pruneLocal` is explicit local cache maintenance. It accepts application-selected IDs, never emits delete mutations, and refuses to remove locally actionable records. Retention policy does not belong on platform-agnostic collection definitions shared with the server.
 
 The client also exposes `vs.ready`, a promise that resolves after local device/session state, IndexedDB cache, migrations, validation, and proxy hydration complete.
+
+For scoped development and exploratory state, `await vs.suspendSync()` returns an async resume
+function. Synced proxy changes inside the scope remain in memory only, all remote attempts are
+blocked, and final resume restores the durable pre-suspension synced state. Local-only device and
+session persistence is unaffected.

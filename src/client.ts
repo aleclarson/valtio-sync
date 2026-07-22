@@ -91,6 +91,7 @@ export type AdoptLocalDataOptions = {
 export type ValtioSyncStatus = {
   hydrated: boolean
   syncing: boolean
+  syncSuspended: boolean
   dirty: boolean
   online: boolean
   lastSyncAt: number | null
@@ -140,6 +141,7 @@ const clientPropertyKeys = [
   'ready',
   'flush',
   'sync',
+  'suspendSync',
   'adoptLocalData',
   'clearLocalData',
   'clearCollection',
@@ -172,6 +174,8 @@ export type ValtioSyncClient<TSchema extends SyncSchema = SyncSchema> = Collecti
   readonly ready: Promise<void>
   flush(): Promise<void>
   sync(): Promise<void>
+  /** Suspend remote sync and return an async function that discards scoped synced-state changes. */
+  suspendSync(): Promise<() => Promise<void>>
   adoptLocalData(source: ValtioSyncClient, options?: AdoptLocalDataOptions): Promise<void>
   clearLocalData(): Promise<void>
   clearCollection(collection: SyncedCollection): Promise<void>
@@ -282,6 +286,7 @@ export function valtioSync<
   const status = proxy<ValtioSyncStatus>({
     hydrated: false,
     syncing: false,
+    syncSuspended: false,
     dirty: false,
     online: typeof navigator === 'undefined' ? true : navigator.onLine,
     lastSyncAt: null,
@@ -320,6 +325,10 @@ export function valtioSync<
   let flushTimer: ReturnType<typeof setTimeout> | undefined
   let retryTimer: ReturnType<typeof setTimeout> | undefined
   let retryAttempt = 0
+  let syncSuspensionCount = 0
+  let discardSuspendedMutations = false
+  let suspensionStart: Promise<void> | undefined
+  let activeSync: Promise<void> | undefined
   let writeQueue = Promise.resolve()
   let reconciliationQueue = Promise.resolve()
 
@@ -372,7 +381,7 @@ export function valtioSync<
   )
   subscriptions.push(
     subscribe(account, (ops) => {
-      if (!hydrating && !trackingPaused) {
+      if (!hydrating && !trackingPaused && !discardSuspendedMutations) {
         void markAccountDirty(ops)
       }
     }, true),
@@ -380,7 +389,7 @@ export function valtioSync<
   for (const [collection, collectionState] of Object.entries(collections)) {
     subscriptions.push(
       subscribe(collectionState.records, (ops) => {
-        if (!hydrating && !trackingPaused) {
+        if (!hydrating && !trackingPaused && !discardSuspendedMutations) {
           void markRecordMutations(collection, ops)
         }
       }, true),
@@ -575,10 +584,22 @@ export function valtioSync<
 
   async function sync(): Promise<void> {
     await flush()
-    if (closed || status.syncing) {
+    if (closed || status.syncing || syncSuspensionCount > 0) {
       return
     }
 
+    const operation = performSync()
+    activeSync = operation
+    try {
+      await operation
+    } finally {
+      if (activeSync === operation) {
+        activeSync = undefined
+      }
+    }
+  }
+
+  async function performSync(): Promise<void> {
     const fetchSync = options.fetch ?? globalThis.fetch
     if (!fetchSync) {
       setStatusError(status, {
@@ -655,6 +676,82 @@ export function valtioSync<
       status.syncing = false
       refreshPendingOps(internals)
       status.dirty = internals.pendingOps.length > 0
+    }
+  }
+
+  async function suspendSync(): Promise<() => Promise<void>> {
+    if (closed) {
+      throw new Error('Cannot suspend sync on a closed valtio-sync client')
+    }
+
+    syncSuspensionCount += 1
+    status.syncSuspended = true
+    if (retryTimer) {
+      clearTimeout(retryTimer)
+      retryTimer = undefined
+    }
+
+    if (!suspensionStart) {
+      suspensionStart = (async () => {
+        await ready
+        await activeSync
+        // Valtio delivers subscription operations asynchronously. Let mutations made before
+        // suspendSync() settle into persistence before establishing the discard boundary.
+        await Promise.resolve()
+        await flush()
+        discardSuspendedMutations = true
+      })()
+    }
+    try {
+      await suspensionStart
+    } catch (error) {
+      syncSuspensionCount -= 1
+      if (syncSuspensionCount === 0) {
+        suspensionStart = undefined
+        status.syncSuspended = false
+      }
+      throw error
+    }
+
+    let resumed = false
+    return async () => {
+      if (resumed) {
+        return
+      }
+      resumed = true
+      syncSuspensionCount -= 1
+      if (syncSuspensionCount > 0 || closed) {
+        return
+      }
+
+      try {
+        // Let the last suspended proxy notifications be discarded before restoring the durable
+        // pre-suspension state. This is what prevents fixture edits from becoming later sync ops.
+        await Promise.resolve()
+        await enqueueReconciliation(async () => {
+          await writeQueue
+          const storedAccount = await storage.readAccount()
+          hydrateAccount(
+            storedAccount?.data ?? (getDefaults(accountDefinition) as JsonRecord),
+            storedAccount,
+          )
+          for (const collection of collectionKeys) {
+            hydrateCollectionFromRecords(collection, await storage.listRecords(collection))
+          }
+          refreshPendingOps(internals)
+          status.dirty = internals.pendingOps.length > 0
+        })
+        discardSuspendedMutations = false
+        suspensionStart = undefined
+        status.syncSuspended = false
+        if (status.dirty && status.lastError?.reason === 'network') {
+          scheduleRetry()
+        }
+      } catch (error) {
+        syncSuspensionCount = 1
+        resumed = false
+        throw error
+      }
     }
   }
 
@@ -1056,7 +1153,7 @@ export function valtioSync<
       if (existing?.meta.deleted) {
         throw new Error(`Cannot recreate deleted record ${collection}:${id}`)
       }
-      if (existing) {
+      if (existing || collectionState.records[id]) {
         throw new Error(`Cannot create existing record ${collection}:${id}`)
       }
 
@@ -1071,6 +1168,9 @@ export function valtioSync<
       runWithoutTracking(() => {
         collectionState.records[id] = parsed
       })
+      if (discardSuspendedMutations) {
+        return
+      }
       persistStoredRecord(collection, {
         id,
         data: parsed,
@@ -1101,6 +1201,9 @@ export function valtioSync<
       runWithoutTracking(() => {
         collectionState.records[mutation.id] = parsed
       })
+      if (discardSuspendedMutations) {
+        return
+      }
       persistStoredRecord(collection, {
         id: mutation.id,
         data: parsed,
@@ -1124,6 +1227,10 @@ export function valtioSync<
     runWithoutTracking(() => {
       delete collectionState.records[mutation.id]
     })
+
+    if (discardSuspendedMutations) {
+      return
+    }
 
     if (existing && existing.meta.serverVersion == null && existing.meta.dirty) {
       storedRecords.delete(key)
@@ -1283,7 +1390,7 @@ export function valtioSync<
   }
 
   function scheduleRetry() {
-    if (!status.dirty || retryTimer) {
+    if (!status.dirty || retryTimer || syncSuspensionCount > 0) {
       return
     }
 
@@ -1292,7 +1399,7 @@ export function valtioSync<
     retryAttempt += 1
     retryTimer = setTimeout(() => {
       retryTimer = undefined
-      if (status.dirty && !closed) {
+      if (status.dirty && !closed && syncSuspensionCount === 0) {
         void sync()
       }
     }, baseDelay * jitter)
@@ -1345,6 +1452,9 @@ export function valtioSync<
     }
     if (closed) {
       throw new Error('Cannot adopt local data into a closed valtio-sync client')
+    }
+    if (syncSuspensionCount > 0) {
+      throw new Error('Cannot adopt local data while sync is suspended')
     }
 
     assertCompatibleLocalDataSource(sourceInternals, String(accountKey), collectionKeys)
@@ -1522,6 +1632,7 @@ export function valtioSync<
     ready,
     flush,
     sync,
+    suspendSync,
     adoptLocalData,
     clearLocalData,
     clearCollection,

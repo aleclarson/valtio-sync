@@ -179,6 +179,7 @@ export type ValtioSyncClient<TSchema extends SyncSchema = SyncSchema> = Collecti
   readonly ready: Promise<void>;
   flush(): Promise<void>;
   sync(): Promise<void>;
+  suspendSync(): Promise<() => Promise<void>>;
   adoptLocalData(_: ValtioSyncClient, _?: AdoptLocalDataOptions): Promise<void>;
   clearLocalData(): Promise<void>;
   clearCollection(_: SyncedCollection): Promise<void>;
@@ -217,6 +218,7 @@ export type ValtioSyncClientOptions<TSchema extends SyncSchema, TDevice extends 
 export type ValtioSyncStatus = {
   hydrated: boolean;
   syncing: boolean;
+  syncSuspended: boolean;
   dirty: boolean;
   online: boolean;
   lastSyncAt: number | null;

@@ -134,6 +134,14 @@ periodic retry while dirty, with backoff
 
 Use exponential backoff with jitter for automatic retries.
 
+## Temporary Sync Suspension
+
+A suspended client keeps account and collection proxies interactive but treats mutations made
+after the suspension boundary as ephemeral. Those mutations do not update synced persistence or
+pending operations. Explicit sync and automatic retry are both blocked. Final resume rehydrates
+synced proxies from their durable pre-suspension state, preserving older dirty work without making
+fixture edits uploadable. Device and session mutations retain their normal local-only persistence.
+
 ## Implementation Details
 
 Compact aggressively before sending:
