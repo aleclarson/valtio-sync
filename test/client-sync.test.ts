@@ -106,6 +106,73 @@ test('accepted create applies canonical record and clears dirty state', async ()
   })
 })
 
+test('accepted account update, collection update, and delete clear persisted dirty state', async () => {
+  const storage = createMemorySyncStorage({
+    account: {
+      data: { theme: 'light' },
+      meta: {
+        schemaVersion: 1,
+        lastServerSeq: 1,
+        sync: {
+          dirty: false,
+          deleted: false,
+          serverVersion: 1,
+          baseServerVersion: 1,
+          updatedAtClient: 0,
+          updatedByDevice: 'device_1',
+          lastSyncedAt: 0,
+          touched: [],
+        },
+      },
+    },
+    collections: {
+      todos: [makeStoredTodo('todo_update', 'Base'), makeStoredTodo('todo_delete', 'Delete')],
+    },
+  })
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemoryStorageAdapter(),
+    fetch: async (_input, init) => {
+      const request = JSON.parse(String(init?.body))
+      return jsonResponse({
+        serverSeq: 4,
+        accepted: request.ops.map((op: Record<string, unknown>, index: number) => ({
+          mutationId: op.mutationId,
+          collection: op.collection,
+          id: op.id,
+          serverVersion: index + 2,
+        })),
+        rejected: [],
+        changes: {},
+      })
+    },
+  })
+  await vs.hydrate({ namespace: 'accepted-operation-matrix', storage, broadcast: false })
+
+  vs.account.theme = 'dark'
+  vs.todos.update('todo_update', { title: 'Updated' })
+  vs.todos.delete('todo_delete')
+  await vs.sync()
+
+  expect(vs.account).toMatchObject({ theme: 'dark' })
+  expect(vs.todos.get('todo_update')).toMatchObject({ title: 'Updated' })
+  expect(vs.todos.get('todo_delete')).toBeUndefined()
+  expect(vs.debug.getPendingOps()).toEqual([])
+  expect(vs.status.dirty).toBe(false)
+  expect((await storage.readAccount())?.meta.sync).toMatchObject({
+    dirty: false,
+    serverVersion: expect.any(Number),
+  })
+  expect(await storage.readRecord('todos', 'todo_update')).toMatchObject({
+    meta: {
+      dirty: false,
+      serverVersion: expect.any(Number),
+    },
+  })
+  expect(await storage.readRecord('todos', 'todo_delete')).toBeNull()
+})
+
 test('contradictory acknowledgement identity leaves the local mutation pending', async () => {
   const vs = valtioSync({
     endpoint: '/api/sync',
@@ -366,6 +433,66 @@ test('accepted create retains a delete made while the create is in flight', asyn
   })
 })
 
+test('rejection of an in-flight operation preserves a newer local mutation', async () => {
+  const storage = createMemorySyncStorage({
+    collections: {
+      todos: [makeStoredTodo('todo_1', 'Base')],
+    },
+  })
+  const requestStarted = Promise.withResolvers<void>()
+  const responseReady = Promise.withResolvers<void>()
+  let request!: {
+    ops: Array<{ mutationId: string; collection: string; id: string }>
+  }
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemoryStorageAdapter(),
+    fetch: async (_input, init) => {
+      request = JSON.parse(String(init?.body))
+      requestStarted.resolve()
+      await responseReady.promise
+      return jsonResponse({
+        serverSeq: 1,
+        accepted: [],
+        rejected: [
+          {
+            mutationId: request.ops[0].mutationId,
+            collection: request.ops[0].collection,
+            id: request.ops[0].id,
+            reason: 'validation',
+            message: 'Sent value was rejected',
+          },
+        ],
+        changes: {},
+      })
+    },
+  })
+  await vs.hydrate({ namespace: 'in-flight-rejection', storage, broadcast: false })
+
+  vs.todos.update('todo_1', { title: 'Rejected' })
+  const syncing = vs.sync()
+  await requestStarted.promise
+  vs.todos.update('todo_1', { title: 'Corrected' })
+  responseReady.resolve()
+  await syncing
+
+  expect(vs.todos.get('todo_1')).toMatchObject({ title: 'Corrected' })
+  expect(vs.debug.getPendingOps()).toMatchObject([
+    {
+      collection: 'todos',
+      type: 'update',
+      id: 'todo_1',
+      patch: { title: 'Corrected' },
+      touched: ['title'],
+    },
+  ])
+  expect(vs.debug.getRecordMeta(vs.todos, 'todo_1')).toMatchObject({
+    dirty: true,
+    lastError: undefined,
+  })
+})
+
 test('overlapping sync calls share one transport attempt', async () => {
   const responseReady = Promise.withResolvers<void>()
   const fetchSync = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -529,6 +656,115 @@ test('network failure preserves dirty record for a later retry', async () => {
     },
   ])
   vs.close()
+})
+
+test('hydrated dirty records persist one stable mutation id', async () => {
+  const dirtyRecord = makeStoredTodo('todo_1', 'Dirty')
+  dirtyRecord.meta = {
+    ...dirtyRecord.meta,
+    dirty: true,
+    touched: ['title'],
+  }
+  const storage = createMemorySyncStorage({
+    collections: {
+      todos: [dirtyRecord],
+    },
+  })
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemoryStorageAdapter(),
+  })
+  await vs.hydrate({ namespace: 'stable-hydrated-id', storage, broadcast: false })
+
+  const firstMutationId = vs.debug.getPendingOps()[0]?.mutationId
+  await vs.flush()
+  const secondMutationId = vs.debug.getPendingOps()[0]?.mutationId
+  await vs.hydrate({ namespace: 'stable-hydrated-id', storage, broadcast: false })
+  const hydratedMutationId = vs.debug.getPendingOps()[0]?.mutationId
+
+  expect(firstMutationId).toMatch(/^mut_/)
+  expect(secondMutationId).toBe(firstMutationId)
+  expect(hydratedMutationId).toBe(firstMutationId)
+  expect((await storage.readRecord('todos', 'todo_1'))?.meta.mutationId).toBe(firstMutationId)
+})
+
+test('hydrated dirty account state persists one stable mutation id', async () => {
+  const storage = createMemorySyncStorage({
+    account: {
+      data: { theme: 'dark' },
+      meta: {
+        schemaVersion: 1,
+        lastServerSeq: 1,
+        sync: {
+          dirty: true,
+          deleted: false,
+          serverVersion: 1,
+          baseServerVersion: 1,
+          updatedAtClient: 0,
+          updatedByDevice: 'device_1',
+          lastSyncedAt: 0,
+          touched: ['theme'],
+        },
+      },
+    },
+  })
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemoryStorageAdapter(),
+  })
+  await vs.hydrate({ namespace: 'stable-account-id', storage, broadcast: false })
+
+  const firstMutationId = vs.debug.getPendingOps()[0]?.mutationId
+  await vs.flush()
+  await vs.hydrate({ namespace: 'stable-account-id', storage, broadcast: false })
+
+  expect(firstMutationId).toMatch(/^mut_/)
+  expect(vs.debug.getPendingOps()[0]?.mutationId).toBe(firstMutationId)
+  expect((await storage.readAccount())?.meta.sync?.mutationId).toBe(firstMutationId)
+})
+
+test('automatic network retry reuses the mutation id and clears dirty state on success', async () => {
+  vi.useFakeTimers()
+  const random = vi.spyOn(Math, 'random').mockReturnValue(0.5)
+  const requests: Array<{
+    ops: Array<{ mutationId: string; collection: string; id: string }>
+  }> = []
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemoryStorageAdapter({ namespace: 'automatic-retry' }),
+    fetch: async (_input, init) => {
+      const request = JSON.parse(String(init?.body))
+      requests.push(request)
+      if (requests.length === 1) {
+        throw new Error('offline')
+      }
+      return jsonResponse({
+        serverSeq: 1,
+        accepted: request.ops.map((op: Record<string, unknown>) => ({
+          mutationId: op.mutationId,
+          collection: op.collection,
+          id: op.id,
+          serverVersion: 1,
+        })),
+        rejected: [],
+        changes: {},
+      })
+    },
+  })
+  await vs.hydrate()
+
+  vs.todos.create({ id: 'todo_1', title: 'Local' })
+  await vs.sync()
+  await vi.advanceTimersByTimeAsync(1_000)
+  await vi.waitFor(() => expect(vs.status.dirty).toBe(false))
+
+  expect(requests).toHaveLength(2)
+  expect(requests[1].ops[0].mutationId).toBe(requests[0].ops[0].mutationId)
+  expect(vs.debug.getPendingOps()).toEqual([])
+  random.mockRestore()
 })
 
 test('auth transport failures remain paused without automatic retry', async () => {
@@ -744,6 +980,49 @@ test('remote changes apply to clean records', async () => {
     completed: true,
   })
   expect(vs.status.dirty).toBe(false)
+})
+
+test('incremental remote deletes remove clean records and conflict with dirty records', async () => {
+  const storage = createMemorySyncStorage({
+    collections: {
+      todos: [makeStoredTodo('todo_clean', 'Clean'), makeStoredTodo('todo_dirty', 'Base')],
+    },
+  })
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemoryStorageAdapter(),
+    fetch: async () =>
+      jsonResponse({
+        serverSeq: 2,
+        accepted: [],
+        rejected: [],
+        changes: {
+          todos: {
+            upserted: [],
+            deleted: [
+              { id: 'todo_clean', serverVersion: 2 },
+              { id: 'todo_dirty', serverVersion: 2 },
+            ],
+          },
+        },
+      }),
+  })
+  await vs.hydrate({ namespace: 'remote-delete', storage, broadcast: false })
+  vs.todos.update('todo_dirty', { title: 'Local' })
+
+  await vs.sync()
+
+  expect(vs.todos.get('todo_clean')).toBeUndefined()
+  expect(await storage.readRecord('todos', 'todo_clean')).toBeNull()
+  expect(vs.todos.get('todo_dirty')).toMatchObject({ title: 'Local' })
+  expect(vs.debug.getRecordMeta(vs.todos, 'todo_dirty')).toMatchObject({
+    dirty: false,
+    lastError: {
+      reason: 'conflict',
+    },
+  })
+  expect(vs.status.lastError).toMatchObject({ reason: 'conflict' })
 })
 
 test('snapshot changes remove absent clean records and preserve dirty records', async () => {

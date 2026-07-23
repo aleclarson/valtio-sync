@@ -682,7 +682,9 @@ export function valtioSync<
     const nextAccountMeta: StoredAccount['meta'] = {
       schemaVersion,
       lastServerSeq: storedAccount?.meta.lastServerSeq ?? null,
-      sync: storedAccount?.meta.sync ?? cleanMeta(null, currentDeviceId(nextDevice)),
+      sync: ensureMutationId(
+        storedAccount?.meta.sync ?? cleanMeta(null, currentDeviceId(nextDevice)),
+      ),
     }
     const parsedCollections: Record<string, StoredRecord[]> = {}
     for (const key of collectionKeys) {
@@ -693,10 +695,15 @@ export function valtioSync<
       }
       for (const record of state.collections[key] ?? []) {
         try {
-          parsedCollections[key].push({
+          const normalizedRecord = {
             ...record,
             data: parseRecord(definition, record.data) as JsonRecord,
-          })
+            meta: ensureMutationId(record.meta),
+          }
+          parsedCollections[key].push(normalizedRecord)
+          if (normalizedRecord.meta !== record.meta) {
+            await context.storage.writeRecord(key, normalizedRecord)
+          }
         } catch (error) {
           setStatusError(candidateStatus, {
             reason: 'validation',
@@ -841,11 +848,17 @@ export function valtioSync<
     for (const record of records) {
       try {
         const parsed = parseRecord(definition, record.data) as JsonRecord
-        recordMeta.set(metaKey(collection, record.id), record.meta)
-        storedRecords.set(metaKey(collection, record.id), {
+        const meta = ensureMutationId(record.meta)
+        const normalizedRecord = {
           ...record,
           data: parsed,
-        })
+          meta,
+        }
+        recordMeta.set(metaKey(collection, record.id), meta)
+        storedRecords.set(metaKey(collection, record.id), normalizedRecord)
+        if (meta !== record.meta) {
+          enqueueStorageWrite(() => storage.writeRecord(collection, normalizedRecord))
+        }
         recordCollections.set(collectionState.name, collection)
         if (!record.meta.deleted) {
           nextRecords[record.id] = parsed
@@ -2227,8 +2240,9 @@ function refreshPendingOps(internals: ClientInternals) {
   const accountSync = internals.accountMeta.sync
 
   if (accountSync?.dirty && !accountSync.deleted) {
+    accountSync.mutationId ??= createMutationId()
     ops.push({
-      mutationId: accountSync.mutationId ?? createMutationId(),
+      mutationId: accountSync.mutationId,
       collection: ACCOUNT_COLLECTION,
       type: 'update',
       id: ACCOUNT_ID,
@@ -2246,7 +2260,8 @@ function refreshPendingOps(internals: ClientInternals) {
     const separator = key.indexOf(':')
     const collection = key.slice(0, separator)
     const id = key.slice(separator + 1)
-    const mutationId = record.meta.mutationId ?? createMutationId()
+    record.meta.mutationId ??= createMutationId()
+    const mutationId = record.meta.mutationId
 
     if (record.meta.deleted) {
       if (record.meta.serverVersion != null) {
@@ -2289,6 +2304,16 @@ function refreshPendingOps(internals: ClientInternals) {
   }
 
   internals.pendingOps = ops
+}
+
+function ensureMutationId(meta: StoredRecord['meta']): StoredRecord['meta'] {
+  if (!meta.dirty || meta.mutationId) {
+    return meta
+  }
+  return {
+    ...meta,
+    mutationId: createMutationId(),
+  }
 }
 
 function cleanMeta(serverVersion: number | null, updatedByDevice: string): StoredRecord['meta'] {
