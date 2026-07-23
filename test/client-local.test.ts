@@ -91,6 +91,50 @@ test('hydrates defaults from an empty local cache', async () => {
   expect(vs.todos.list()).toEqual([])
 })
 
+test('account, collection, device, and session mutations survive a new client hydration', async () => {
+  const storage = createMemorySyncStorage()
+  const localStorage = createMemoryWebStorage()
+  const sessionStorage = createMemoryWebStorage()
+  const storageAdapter = memoryAdapter(
+    'durable-state',
+    storage,
+    localStorage,
+    sessionStorage,
+  )
+  const options = {
+    storage: storageAdapter,
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    device: {
+      deviceId: z.string().default('device_1'),
+    },
+    session: {
+      sidebarOpen: z.boolean().default(false),
+    },
+  }
+  const first = valtioSync(options)
+  await first.hydrate()
+
+  first.account.theme = 'dark'
+  first.device.deviceId = 'device_2'
+  first.session.sidebarOpen = true
+  first.todos.create({ id: 'todo_1', title: 'Persisted' })
+  await first.flush()
+  first.close()
+
+  const second = valtioSync(options)
+  await second.hydrate()
+
+  expect(second.account).toMatchObject({ theme: 'dark' })
+  expect(second.device).toMatchObject({ deviceId: 'device_2' })
+  expect(second.session).toMatchObject({ sidebarOpen: true })
+  expect(second.todos.get('todo_1')).toMatchObject({ title: 'Persisted' })
+  expect(second.debug.getPendingOps()).toMatchObject([
+    { collection: 'account', type: 'update', patch: { theme: 'dark' } },
+    { collection: 'todos', type: 'create', id: 'todo_1' },
+  ])
+})
+
 test('rejects collection names reserved by the client API', () => {
   expect(() =>
     valtioSync({
@@ -118,7 +162,7 @@ test('hydrates cached records after local migrations', async () => {
   const vs = valtioSync({
     storage: createMemoryStorageAdapter(),
     endpoint: '/api/sync',
-    schemaVersion: 2,
+    schemaVersion: 3,
     schema: { account, todos },
     migrations: {
       2: (state) => ({
@@ -134,6 +178,19 @@ test('hydrates cached records after local migrations', async () => {
           })),
         },
       }),
+      3: (state) => ({
+        ...state,
+        collections: {
+          ...state.collections,
+          todos: state.collections.todos.map((record) => ({
+            ...record,
+            data: {
+              ...record.data,
+              completed: true,
+            },
+          })),
+        },
+      }),
     },
   })
 
@@ -143,11 +200,125 @@ test('hydrates cached records after local migrations', async () => {
   expect(vs.todos.get('todo_1')).toMatchObject({
     id: 'todo_1',
     title: 'Old migrated',
-    completed: false,
+    completed: true,
   })
   expect((await storage.readAccount())?.meta).toMatchObject({
-    schemaVersion: 2,
+    schemaVersion: 3,
     lastServerSeq: 5,
+  })
+})
+
+test('fails migration safely when an ordered version step is missing', async () => {
+  const storage = createMemorySyncStorage({
+    account: {
+      data: { theme: 'dark' },
+      meta: {
+        schemaVersion: 1,
+        lastServerSeq: 5,
+      },
+    },
+  })
+  const vs = valtioSync({
+    storage: memoryAdapter('missing-migration', storage),
+    endpoint: '/api/sync',
+    schemaVersion: 3,
+    schema: { account, todos },
+    migrations: {
+      3: (state) => state,
+    },
+  })
+
+  await expect(vs.hydrate()).rejects.toThrow(
+    'Missing valtio-sync migration for schema version 2',
+  )
+  expect(vs.status.phase).toBe('cold')
+  expect(await storage.readAccount()).toEqual({
+    data: { theme: 'dark' },
+    meta: {
+      schemaVersion: 1,
+      lastServerSeq: 5,
+    },
+  })
+})
+
+test('falls back from invalid cached data and reports validation errors', async () => {
+  const storage = createMemorySyncStorage({
+    account: {
+      data: { theme: 'invalid' },
+      meta: {
+        schemaVersion: 1,
+        lastServerSeq: null,
+      },
+    },
+    collections: {
+      todos: [
+        makeStoredTodo('todo_invalid', {
+          id: 'todo_invalid',
+          title: 'Invalid',
+          completed: 'not-a-boolean' as unknown as boolean,
+        }),
+      ],
+    },
+  })
+  const localStorage = createMemoryWebStorage()
+  const sessionStorage = createMemoryWebStorage()
+  localStorage.setItem('valtio-sync:invalid-cache:device', '{invalid json')
+  sessionStorage.setItem(
+    'valtio-sync:invalid-cache:session',
+    JSON.stringify({ sidebarOpen: 'yes' }),
+  )
+  const vs = valtioSync({
+    storage: memoryAdapter(
+      'invalid-cache',
+      storage,
+      localStorage,
+      sessionStorage,
+    ),
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    device: {
+      deviceId: z.string().default('device_1'),
+    },
+    session: {
+      sidebarOpen: z.boolean().default(false),
+    },
+  })
+
+  await vs.hydrate()
+
+  expect(vs.account).toMatchObject({ theme: 'light' })
+  expect(vs.device).toMatchObject({ deviceId: 'device_1' })
+  expect(vs.session).toMatchObject({ sidebarOpen: false })
+  expect(vs.todos.list()).toEqual([])
+  expect(vs.status.lastError).toMatchObject({ reason: 'validation' })
+})
+
+test('reports local storage write failures without clearing pending mutations', async () => {
+  const baseStorage = createMemorySyncStorage()
+  const storage: SyncStorage = {
+    ...baseStorage,
+    async writeRecord() {
+      throw new Error('disk unavailable')
+    },
+  }
+  const vs = valtioSync({
+    storage: memoryAdapter('write-failure', storage),
+    endpoint: '/api/sync',
+    schema: { account, todos },
+  })
+  await vs.hydrate()
+
+  vs.todos.create({ id: 'todo_1', title: 'Pending' })
+  await vs.flush()
+
+  expect(vs.todos.get('todo_1')).toMatchObject({ title: 'Pending' })
+  expect(await baseStorage.readRecord('todos', 'todo_1')).toBeNull()
+  expect(vs.debug.getPendingOps()).toMatchObject([
+    { collection: 'todos', type: 'create', id: 'todo_1' },
+  ])
+  expect(vs.status.lastError).toMatchObject({
+    reason: 'server_error',
+    message: 'disk unavailable',
   })
 })
 
@@ -426,7 +597,7 @@ test('rejects anonymous local data adoption into a non-empty target', async () =
   })
 })
 
-test('broadcasts local collection changes to another tab', async () => {
+test('two tabs preserve independent mutations in the same collection', async () => {
   if (typeof BroadcastChannel === 'undefined') {
     return
   }
@@ -450,12 +621,24 @@ test('broadcasts local collection changes to another tab', async () => {
   ])
 
   firstTab.todos.create({ id: 'todo_1', title: 'From tab one' })
-  await firstTab.flush()
-  await waitFor(() => secondTab.todos.get('todo_1') !== undefined)
+  secondTab.todos.create({ id: 'todo_2', title: 'From tab two' })
+  await Promise.all([firstTab.flush(), secondTab.flush()])
+  await waitFor(
+    () =>
+      firstTab.todos.get('todo_2') !== undefined &&
+      secondTab.todos.get('todo_1') !== undefined,
+  )
 
+  expect(firstTab.todos.get('todo_2')).toMatchObject({
+    title: 'From tab two',
+  })
   expect(secondTab.todos.get('todo_1')).toMatchObject({
     title: 'From tab one',
   })
+  expect((await storage.listRecords('todos')).map((record) => record.id).sort()).toEqual([
+    'todo_1',
+    'todo_2',
+  ])
 
   firstTab.close()
   secondTab.close()
