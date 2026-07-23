@@ -187,6 +187,79 @@ test('clears persisted local data and resets proxies', async () => {
   expect(vs.todos.list()).toEqual([])
 })
 
+test('clears one collection locally without creating remote delete state', async () => {
+  const storage = createMemorySyncStorage({
+    collections: {
+      todos: [makeStoredTodo('todo_1', { id: 'todo_1', title: 'Cached' })],
+    },
+  })
+  const storageAdapter = memoryAdapter('clear-collection', storage)
+  const vs = valtioSync({
+    storage: storageAdapter,
+    endpoint: '/api/sync',
+    schema: { account, todos },
+  })
+  await vs.hydrate()
+
+  await vs.clearCollection(vs.todos)
+  await vs.flush()
+
+  expect(vs.todos.list()).toEqual([])
+  expect(await storage.listRecords('todos')).toEqual([])
+  expect(vs.debug.getPendingOps()).toEqual([])
+  expect(vs.status.dirty).toBe(false)
+
+  await vs.hydrate()
+
+  expect(vs.todos.list()).toEqual([])
+  expect(await storage.listRecords('todos')).toEqual([])
+  expect(vs.debug.getPendingOps()).toEqual([])
+  expect(vs.status.dirty).toBe(false)
+})
+
+test('reset clears every local state tier across hydration', async () => {
+  const storageAdapter = createMemoryStorageAdapter({
+    namespace: 'reset-all',
+    account: {
+      data: { theme: 'dark' },
+      meta: { schemaVersion: 1, lastServerSeq: 4 },
+    },
+    collections: {
+      todos: [makeStoredTodo('todo_1', { id: 'todo_1', title: 'Cached' })],
+    },
+    device: { deviceId: 'device_2' },
+    session: { sidebarOpen: true },
+  })
+  const vs = valtioSync({
+    storage: storageAdapter,
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    device: {
+      deviceId: z.string().default('device_1'),
+    },
+    session: {
+      sidebarOpen: z.boolean().default(false),
+    },
+  })
+  await vs.hydrate()
+
+  await vs.reset()
+
+  expect(vs.account).toMatchObject({ theme: 'light' })
+  expect(vs.device).toMatchObject({ deviceId: 'device_1' })
+  expect(vs.session).toMatchObject({ sidebarOpen: false })
+  expect(vs.todos.list()).toEqual([])
+  expect(vs.debug.getPendingOps()).toEqual([])
+
+  await vs.hydrate()
+
+  expect(vs.account).toMatchObject({ theme: 'light' })
+  expect(vs.device).toMatchObject({ deviceId: 'device_1' })
+  expect(vs.session).toMatchObject({ sidebarOpen: false })
+  expect(vs.todos.list()).toEqual([])
+  expect(vs.debug.getPendingOps()).toEqual([])
+})
+
 test('adopts anonymous local data into a new account and clears source after sync', async () => {
   const sourceStorage = createMemorySyncStorage()
   const targetStorage = createMemorySyncStorage()

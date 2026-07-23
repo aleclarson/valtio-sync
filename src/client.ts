@@ -1962,7 +1962,9 @@ export function valtioSync<
       await writeQueue
       const collectionName = recordCollections.get(collection.name) ?? collection.name
       await storage.clearCollection(collectionName)
-      replaceObject(collection.records, {})
+      runWithoutTracking(() => {
+        replaceObject(collection.records, {})
+      })
       for (const key of recordMeta.keys()) {
         if (key.startsWith(`${collectionName}:`)) {
           recordMeta.delete(key)
@@ -1970,6 +1972,7 @@ export function valtioSync<
         }
       }
       refreshPendingOps(internals)
+      status.dirty = internals.pendingOps.length > 0
       channel?.postMessage({
         namespace: storageNamespace,
         type: 'collectionChanged',
