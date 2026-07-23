@@ -26,6 +26,42 @@ function syncRequest(body: unknown) {
   })
 }
 
+test('server handler rejects unsupported methods and malformed requests', async () => {
+  const getContext = vi.fn()
+  const syncServer = valtioSync({
+    schema: { account, todos },
+    getContext,
+    handlers: {},
+  })
+
+  const methodResponse = await syncServer.handle(
+    new Request('https://app.test/api/sync', { method: 'GET' }),
+  )
+  const malformedJsonResponse = await syncServer.handle(
+    new Request('https://app.test/api/sync', {
+      method: 'POST',
+      body: '{invalid json',
+      headers: { 'content-type': 'application/json' },
+    }),
+  )
+  const malformedShapeResponse = await syncServer.handle(
+    syncRequest({
+      clientId: '',
+      schemaVersion: -1,
+      lastServerSeq: null,
+      ops: [],
+    }),
+  )
+
+  expect(methodResponse.status).toBe(405)
+  expect(await methodResponse.json()).toEqual({ error: 'Method not allowed' })
+  expect(malformedJsonResponse.status).toBe(400)
+  expect(await malformedJsonResponse.json()).toHaveProperty('error')
+  expect(malformedShapeResponse.status).toBe(400)
+  expect(await malformedShapeResponse.json()).toHaveProperty('error')
+  expect(getContext).not.toHaveBeenCalled()
+})
+
 test('server handler validates ops and returns accepted mutations with changes', async () => {
   const calls: string[] = []
   const syncServer = valtioSync({
@@ -341,6 +377,51 @@ test('server handler rejects contradictory canonical and changed record ids', as
       }),
     ),
   ).rejects.toThrow('Returned record id must match its envelope id')
+})
+
+test('server handler converts an invalid mutation result into a server-error rejection', async () => {
+  const syncServer = valtioSync({
+    schema: { account, todos },
+    handlers: {
+      todos: {
+        create: ({ record }) => ({
+          serverVersion: -1,
+          record,
+        }),
+      },
+    },
+  })
+
+  const response = await syncServer.handle(
+    syncRequest({
+      clientId: 'device_1',
+      schemaVersion: 1,
+      lastServerSeq: null,
+      ops: [
+        {
+          mutationId: 'm1',
+          collection: 'todos',
+          type: 'create',
+          id: 'todo_1',
+          value: {
+            id: 'todo_1',
+            title: 'Local',
+          },
+          touched: ['id', 'title'],
+        },
+      ],
+    }),
+  )
+  const body = await response.json()
+
+  expect(body.accepted).toEqual([])
+  expect(body.rejected).toMatchObject([
+    {
+      mutationId: 'm1',
+      reason: 'server_error',
+      message: 'Mutation serverVersion must be a non-negative integer',
+    },
+  ])
 })
 
 test('server handler lets readChanges bootstrap a new device with a snapshot', async () => {

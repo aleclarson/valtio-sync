@@ -277,12 +277,14 @@ async function applyOp<TContext>(
       if (definition.kind === 'collection' && record.id !== op.id) {
         rejectSync('validation', 'Record id must match operation id')
       }
-      const result = await handler.create({
-        request,
-        ctx,
-        op,
-        record,
-      })
+      const result = validateMutationResult(
+        await handler.create({
+          request,
+          ctx,
+          op,
+          record,
+        }),
+      )
       return {
         accepted: {
           mutationId: op.mutationId,
@@ -301,12 +303,14 @@ async function applyOp<TContext>(
         rejectSync('not_found', `Collection ${op.collection} cannot update`)
       }
       const patch = parsePatch(definition, op.patch) as JsonRecord
-      const result = await handler.update({
-        request,
-        ctx,
-        op,
-        patch,
-      })
+      const result = validateMutationResult(
+        await handler.update({
+          request,
+          ctx,
+          op,
+          patch,
+        }),
+      )
       return {
         accepted: {
           mutationId: op.mutationId,
@@ -323,11 +327,13 @@ async function applyOp<TContext>(
     if (!('delete' in handler) || !handler.delete) {
       rejectSync('not_found', `Collection ${op.collection} cannot delete`)
     }
-    const result = await handler.delete({
-      request,
-      ctx,
-      op,
-    })
+    const result = validateMutationResult(
+      await handler.delete({
+        request,
+        ctx,
+        op,
+      }),
+    )
     return {
       accepted: {
         mutationId: op.mutationId,
@@ -429,6 +435,13 @@ function parseReturnedRecord(
     throw new Error('Returned record id must match its envelope id')
   }
   return record
+}
+
+function validateMutationResult(result: ServerMutationResult): ServerMutationResult {
+  if (!Number.isInteger(result.serverVersion) || result.serverVersion < 0) {
+    throw new Error('Mutation serverVersion must be a non-negative integer')
+  }
+  return result
 }
 
 function assertEnvelopeId(definition: SchemaDefinition, id: string) {

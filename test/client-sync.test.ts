@@ -794,6 +794,73 @@ test('auth transport failures remain paused without automatic retry', async () =
   })
 })
 
+test('non-auth HTTP and malformed response failures remain pending as network errors', async () => {
+  const responses = [
+    new Response('Server unavailable', { status: 503 }),
+    new Response('{invalid json', {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  ]
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemoryStorageAdapter({ namespace: 'invalid-transport-response' }),
+    fetch: async () => responses.shift()!,
+  })
+  await vs.hydrate()
+  vs.todos.create({ id: 'todo_1', title: 'Local' })
+
+  await vs.sync()
+  expect(vs.status.lastError).toMatchObject({
+    reason: 'network',
+    message: 'Server unavailable',
+  })
+  expect(vs.status.dirty).toBe(true)
+
+  await vs.sync()
+  expect(vs.status.lastError).toMatchObject({ reason: 'network' })
+  expect(vs.status.dirty).toBe(true)
+  expect(vs.debug.getPendingOps()).toMatchObject([
+    { collection: 'todos', type: 'create', id: 'todo_1' },
+  ])
+  vs.close()
+})
+
+test('unknown changed collections do not advance the client cursor', async () => {
+  const requests: Array<{ lastServerSeq: number | null }> = []
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemoryStorageAdapter({ namespace: 'unknown-change-collection' }),
+    fetch: async (_input, init) => {
+      requests.push(JSON.parse(String(init?.body)))
+      return jsonResponse({
+        serverSeq: 5,
+        accepted: [],
+        rejected: [],
+        changes: {
+          unknown: {
+            upserted: [],
+            deleted: [],
+          },
+        },
+      })
+    },
+  })
+  await vs.hydrate()
+
+  await vs.sync()
+  await vs.sync()
+
+  expect(requests.map((request) => request.lastServerSeq)).toEqual([null, null])
+  expect(vs.status.lastError).toMatchObject({
+    reason: 'network',
+    message: 'Unknown changed collection: unknown',
+  })
+  vs.close()
+})
+
 test('transport interceptor drops a scheduled retry without clearing pending writes', async () => {
   vi.useFakeTimers()
   let failSync = true

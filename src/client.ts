@@ -1090,6 +1090,12 @@ export function valtioSync<
     }
 
     for (const [collection, changes] of Object.entries(response.changes)) {
+      if (
+        collection !== ACCOUNT_COLLECTION &&
+        (!options.schema[collection] || options.schema[collection].kind !== 'collection')
+      ) {
+        throw new Error(`Unknown changed collection: ${collection}`)
+      }
       const snapshotIds = changes.mode === 'snapshot' ? new Set<string>() : null
       for (const change of changes.upserted) {
         snapshotIds?.add(change.id)

@@ -197,4 +197,11 @@ if (op.baseServerVersion !== row.version) {
 }
 ```
 
-The server validates sync requests before calling handlers and validates returned changes before responding. Invalid operations are returned in `rejected` rather than crashing the whole sync request.
+The server validates sync requests before calling handlers and validates returned changes before
+responding. Invalid operations are returned in `rejected` rather than crashing the whole sync
+request.
+
+Collection identities are validated at the protocol boundary. A create operation's `id` must match
+`value.id`; canonical records and change-feed upserts must match their envelope ID; and account
+operations and changes must use the `singleton` ID. Contradictory client input is rejected before
+application handlers run, while contradictory handler output is reported as a server error.

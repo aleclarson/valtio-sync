@@ -89,6 +89,11 @@ Calling `sync()` while another sync is running returns without starting an overl
 Choose a polling interval appropriate for the application's traffic, battery, and freshness
 requirements.
 
+Local mutations may continue while a request is in flight. An acknowledgement applies only to the
+state included in that request; newer local fields remain dirty and are sent by a later sync. If
+the acknowledgement includes a canonical record, canonical fields are applied without overwriting
+those newer local mutations.
+
 Browser shutdown hooks are best-effort and should not be the only remote durability mechanism. If
 a tab closes before a remote sync succeeds, the dirty changes remain in that client's local
 persistence and can be sent when that client is opened again. Other devices will not see those
