@@ -14,6 +14,8 @@ import type {
 import { parseSyncRequest, parseSyncResponse } from './protocol.js'
 import {
   ACCOUNT_COLLECTION,
+  ACCOUNT_ID,
+  type SchemaDefinition,
   type SyncSchema,
   getAccountKey,
   getCollectionDefinition,
@@ -263,12 +265,18 @@ async function applyOp<TContext>(
     if (!definition || !handler) {
       rejectSync('not_found', `Unknown sync collection: ${op.collection}`)
     }
+    if (op.collection === ACCOUNT_COLLECTION && op.id !== ACCOUNT_ID) {
+      rejectSync('validation', 'Account operations must use the singleton id')
+    }
 
     if (op.type === 'create') {
       if (!('create' in handler) || !handler.create) {
         rejectSync('not_found', `Collection ${op.collection} cannot create`)
       }
       const record = parseRecord(definition, op.value) as JsonRecord
+      if (definition.kind === 'collection' && record.id !== op.id) {
+        rejectSync('validation', 'Record id must match operation id')
+      }
       const result = await handler.create({
         request,
         ctx,
@@ -282,7 +290,7 @@ async function applyOp<TContext>(
           id: op.id,
           serverVersion: result.serverVersion,
           record: result.record
-            ? (parseRecord(definition, result.record) as JsonRecord)
+            ? parseReturnedRecord(definition, op.id, result.record)
             : undefined,
         },
       }
@@ -306,7 +314,7 @@ async function applyOp<TContext>(
           id: op.id,
           serverVersion: result.serverVersion,
           record: result.record
-            ? (parseRecord(definition, result.record) as JsonRecord)
+            ? parseReturnedRecord(definition, op.id, result.record)
             : undefined,
         },
       }
@@ -327,7 +335,7 @@ async function applyOp<TContext>(
         id: op.id,
         serverVersion: result.serverVersion,
         record: result.record
-          ? (parseRecord(definition, result.record) as JsonRecord)
+          ? parseReturnedRecord(definition, op.id, result.record)
           : undefined,
       },
     }
@@ -397,11 +405,35 @@ function validateChanges(
 
   return {
     mode: changes.mode,
-    upserted: changes.upserted.map((change) => ({
-      ...change,
-      record: parseRecord(definition, change.record) as JsonRecord,
-    })),
-    deleted: [...changes.deleted],
+    upserted: changes.upserted.map((change) => {
+      assertEnvelopeId(definition, change.id)
+      return {
+        ...change,
+        record: parseReturnedRecord(definition, change.id, change.record),
+      }
+    }),
+    deleted: changes.deleted.map((change) => {
+      assertEnvelopeId(definition, change.id)
+      return change
+    }),
+  }
+}
+
+function parseReturnedRecord(
+  definition: SchemaDefinition,
+  envelopeId: string,
+  value: unknown,
+): JsonRecord {
+  const record = parseRecord(definition, value) as JsonRecord
+  if (definition.kind === 'collection' && record.id !== envelopeId) {
+    throw new Error('Returned record id must match its envelope id')
+  }
+  return record
+}
+
+function assertEnvelopeId(definition: SchemaDefinition, id: string) {
+  if (definition.kind === 'account' && id !== ACCOUNT_ID) {
+    throw new Error('Account changes must use the singleton id')
   }
 }
 

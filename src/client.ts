@@ -1060,6 +1060,7 @@ export function valtioSync<
       if (!op) {
         continue
       }
+      assertResponseOpIdentity(op, accepted.collection, accepted.id)
       await applyAcceptedOp(op, accepted.serverVersion, accepted.record)
     }
 
@@ -1068,6 +1069,7 @@ export function valtioSync<
       if (!op) {
         continue
       }
+      assertResponseOpIdentity(op, rejected.collection, rejected.id)
       await applyRejectedOp(op, {
         reason: rejected.reason,
         message: rejected.message,
@@ -1153,6 +1155,9 @@ export function valtioSync<
     const canonicalData = canonicalRecord
       ? (parseRecord(definition, canonicalRecord) as JsonRecord)
       : undefined
+    if (canonicalData) {
+      assertWireRecordIdentity(op.collection, op.id, canonicalData)
+    }
     const data = hasNewerMutation
       ? canonicalData
         ? overlayTouched(canonicalData, existing.data, existing.meta.touched ?? [])
@@ -1236,6 +1241,7 @@ export function valtioSync<
     serverVersion: number,
   ) {
     if (collection === ACCOUNT_COLLECTION) {
+      assertWireRecordIdentity(collection, id, record)
       const syncMeta = accountMeta.sync ?? cleanMeta(null, currentDeviceId(device))
       if (syncMeta.dirty) {
         const error: SyncError = {
@@ -1274,6 +1280,8 @@ export function valtioSync<
       return
     }
 
+    const parsed = parseRecord(definition, record) as JsonRecord
+    assertWireRecordIdentity(collection, id, parsed)
     const key = metaKey(collection, id)
     const existing = storedRecords.get(key)
     if (existing?.meta.dirty) {
@@ -1294,7 +1302,6 @@ export function valtioSync<
       return
     }
 
-    const parsed = parseRecord(definition, record) as JsonRecord
     const storedRecord: StoredRecord = {
       id,
       data: parsed,
@@ -1307,6 +1314,9 @@ export function valtioSync<
   }
 
   async function applyRemoteDelete(collection: string, id: string, serverVersion: number) {
+    if (collection === ACCOUNT_COLLECTION) {
+      throw new Error('Remote account deletion is not supported')
+    }
     const collectionState = collections[collection]
     if (!collectionState) {
       return
@@ -2343,6 +2353,25 @@ function overlayTouched(base: JsonRecord, local: JsonRecord, touched: string[]):
   return {
     ...base,
     ...pickTouched(local, touched),
+  }
+}
+
+function assertResponseOpIdentity(op: SyncOp, collection: string, id: string) {
+  if (collection !== op.collection || id !== op.id) {
+    throw new Error(`Sync response identity does not match mutation ${op.mutationId}`)
+  }
+}
+
+function assertWireRecordIdentity(collection: string, id: string, record: JsonRecord) {
+  if (collection === ACCOUNT_COLLECTION) {
+    if (id !== ACCOUNT_ID) {
+      throw new Error('Account changes must use the singleton id')
+    }
+    return
+  }
+
+  if (record.id !== id) {
+    throw new Error(`Record id does not match change envelope for ${collection}:${id}`)
   }
 }
 

@@ -106,6 +106,49 @@ test('accepted create applies canonical record and clears dirty state', async ()
   })
 })
 
+test('contradictory acknowledgement identity leaves the local mutation pending', async () => {
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemoryStorageAdapter({ namespace: 'invalid-ack-identity' }),
+    fetch: async (_input, init) => {
+      const request = JSON.parse(String(init?.body))
+      return jsonResponse({
+        serverSeq: 1,
+        accepted: [
+          {
+            mutationId: request.ops[0].mutationId,
+            collection: 'todos',
+            id: 'todo_other',
+            serverVersion: 1,
+          },
+        ],
+        rejected: [],
+        changes: {},
+      })
+    },
+  })
+  await vs.hydrate()
+
+  vs.todos.create({ id: 'todo_1', title: 'Local' })
+  await vs.sync()
+
+  expect(vs.todos.get('todo_1')).toMatchObject({ title: 'Local' })
+  expect(vs.status.dirty).toBe(true)
+  expect(vs.status.lastError).toMatchObject({
+    reason: 'network',
+    message: expect.stringContaining('identity does not match mutation'),
+  })
+  expect(vs.debug.getPendingOps()).toMatchObject([
+    {
+      collection: 'todos',
+      type: 'create',
+      id: 'todo_1',
+    },
+  ])
+  vs.close()
+})
+
 test('accepted update preserves a newer mutation made while sync is in flight', async () => {
   const storage = createMemorySyncStorage({
     collections: {

@@ -194,6 +194,155 @@ test('server handler rejects invalid ops without calling app handlers', async ()
   ])
 })
 
+test('server handler rejects contradictory operation and record ids', async () => {
+  const create = vi.fn()
+  const updateAccount = vi.fn()
+  const syncServer = valtioSync({
+    schema: { account, todos },
+    handlers: {
+      account: {
+        update: updateAccount,
+      },
+      todos: {
+        create,
+      },
+    },
+  })
+
+  const response = await syncServer.handle(
+    syncRequest({
+      clientId: 'device_1',
+      schemaVersion: 1,
+      lastServerSeq: null,
+      ops: [
+        {
+          mutationId: 'm1',
+          collection: 'todos',
+          type: 'create',
+          id: 'todo_outer',
+          value: {
+            id: 'todo_inner',
+            title: 'Local',
+          },
+          touched: ['id', 'title'],
+        },
+        {
+          mutationId: 'm2',
+          collection: ACCOUNT_COLLECTION,
+          type: 'update',
+          id: 'not-the-singleton',
+          patch: {
+            theme: 'dark',
+          },
+          touched: ['theme'],
+          baseServerVersion: null,
+        },
+      ],
+    }),
+  )
+  const body = await response.json()
+
+  expect(create).not.toHaveBeenCalled()
+  expect(updateAccount).not.toHaveBeenCalled()
+  expect(body.rejected).toMatchObject([
+    {
+      mutationId: 'm1',
+      reason: 'validation',
+      message: 'Record id must match operation id',
+    },
+    {
+      mutationId: 'm2',
+      reason: 'validation',
+      message: 'Account operations must use the singleton id',
+    },
+  ])
+})
+
+test('server handler rejects contradictory canonical and changed record ids', async () => {
+  const canonicalServer = valtioSync({
+    schema: { account, todos },
+    handlers: {
+      todos: {
+        create: () => ({
+          serverVersion: 1,
+          record: {
+            id: 'todo_other',
+            title: 'Canonical',
+            completed: false,
+          },
+        }),
+      },
+    },
+  })
+
+  const canonicalResponse = await canonicalServer.handle(
+    syncRequest({
+      clientId: 'device_1',
+      schemaVersion: 1,
+      lastServerSeq: null,
+      ops: [
+        {
+          mutationId: 'm1',
+          collection: 'todos',
+          type: 'create',
+          id: 'todo_1',
+          value: {
+            id: 'todo_1',
+            title: 'Local',
+          },
+          touched: ['id', 'title'],
+        },
+      ],
+    }),
+  )
+  const canonicalBody = await canonicalResponse.json()
+
+  expect(canonicalBody.accepted).toEqual([])
+  expect(canonicalBody.rejected).toMatchObject([
+    {
+      mutationId: 'm1',
+      reason: 'server_error',
+      message: 'Returned record id must match its envelope id',
+    },
+  ])
+
+  const changesServer = valtioSync({
+    schema: { account, todos },
+    handlers: {
+      todos: {
+        readChanges: () => ({
+          serverSeq: 2,
+          changes: {
+            upserted: [
+              {
+                id: 'todo_outer',
+                serverVersion: 2,
+                record: {
+                  id: 'todo_inner',
+                  title: 'Remote',
+                  completed: false,
+                },
+              },
+            ],
+            deleted: [],
+          },
+        }),
+      },
+    },
+  })
+
+  await expect(
+    changesServer.handle(
+      syncRequest({
+        clientId: 'device_1',
+        schemaVersion: 1,
+        lastServerSeq: null,
+        ops: [],
+      }),
+    ),
+  ).rejects.toThrow('Returned record id must match its envelope id')
+})
+
 test('server handler lets readChanges bootstrap a new device with a snapshot', async () => {
   const readSnapshot = vi.fn()
   const readChanges = vi.fn(({ since }) => ({
