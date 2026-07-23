@@ -364,6 +364,7 @@ export function valtioSync<
   let reconciliationQueue = Promise.resolve()
   let contextTransitionQueue = Promise.resolve()
   let activeSyncPromise: Promise<void> | undefined
+  const inFlightMutationIds = new Set<string>()
   const transportInterceptors: Array<{ interceptor: SyncTransportInterceptor }> = []
   const owner = {}
   const defaultAdapter = options.storage
@@ -933,6 +934,9 @@ export function valtioSync<
 
     internals.lastSyncRequest = request
     status.syncing = true
+    for (const op of request.ops) {
+      inFlightMutationIds.add(op.mutationId)
+    }
 
     try {
       const transport = transportInterceptors.reduceRight<SyncTransport>(
@@ -973,6 +977,9 @@ export function valtioSync<
         scheduleRetry()
       }
     } finally {
+      for (const op of request.ops) {
+        inFlightMutationIds.delete(op.mutationId)
+      }
       status.syncing = false
       refreshPendingOps(internals)
       status.dirty = internals.pendingOps.length > 0
@@ -1089,15 +1096,29 @@ export function valtioSync<
     canonicalRecord: JsonRecord | undefined,
   ) {
     if (op.collection === ACCOUNT_COLLECTION) {
-      const nextAccount = canonicalRecord
+      const currentSync = accountMeta.sync
+      const hasNewerMutation =
+        currentSync?.dirty === true && currentSync.mutationId !== op.mutationId
+      const currentAccount = snapshotJsonRecord(account)
+      const canonicalAccount = canonicalRecord
         ? (parseRecord(accountDefinition, canonicalRecord) as JsonRecord)
-        : snapshotJsonRecord(account)
+        : currentAccount
+      const nextAccount = hasNewerMutation
+        ? overlayTouched(canonicalAccount, currentAccount, currentSync.touched ?? [])
+        : canonicalAccount
       accountMeta = {
         ...accountMeta,
-        sync: {
-          ...cleanMeta(serverVersion, currentDeviceId(device)),
-          lastSyncedAt: Date.now(),
-        },
+        sync: hasNewerMutation
+          ? {
+              ...currentSync,
+              serverVersion,
+              baseServerVersion: serverVersion,
+              lastSyncedAt: Date.now(),
+            }
+          : {
+              ...cleanMeta(serverVersion, currentDeviceId(device)),
+              lastSyncedAt: Date.now(),
+            },
       }
       internals.accountMeta = accountMeta
       internals.accountData = nextAccount
@@ -1124,10 +1145,19 @@ export function valtioSync<
       return
     }
 
+    const key = metaKey(op.collection, op.id)
+    const existing = storedRecords.get(key)
+    const hasNewerMutation =
+      existing?.meta.dirty === true && existing.meta.mutationId !== op.mutationId
     const currentRecord = collectionState.records[op.id]
-    const data = canonicalRecord
+    const canonicalData = canonicalRecord
       ? (parseRecord(definition, canonicalRecord) as JsonRecord)
-      : (currentRecord ?? storedRecords.get(metaKey(op.collection, op.id))?.data)
+      : undefined
+    const data = hasNewerMutation
+      ? canonicalData
+        ? overlayTouched(canonicalData, existing.data, existing.meta.touched ?? [])
+        : existing.data
+      : (canonicalData ?? currentRecord ?? existing?.data)
 
     if (!data) {
       return
@@ -1136,25 +1166,38 @@ export function valtioSync<
     const record: StoredRecord = {
       id: op.id,
       data,
-      meta: {
-        ...cleanMeta(serverVersion, currentDeviceId(device)),
-        lastSyncedAt: Date.now(),
-      },
+      meta: hasNewerMutation
+        ? {
+            ...existing.meta,
+            serverVersion,
+            baseServerVersion: serverVersion,
+            lastSyncedAt: Date.now(),
+          }
+        : {
+            ...cleanMeta(serverVersion, currentDeviceId(device)),
+            lastSyncedAt: Date.now(),
+          },
     }
     runWithoutTracking(() => {
-      collectionState.records[op.id] = data
+      if (record.meta.deleted) {
+        delete collectionState.records[op.id]
+      } else {
+        collectionState.records[op.id] = data
+      }
     })
     persistStoredRecord(op.collection, record)
   }
 
   async function applyRejectedOp(op: SyncOp, error: SyncError) {
     if (op.collection === ACCOUNT_COLLECTION) {
+      const hasNewerMutation =
+        accountMeta.sync?.dirty === true && accountMeta.sync.mutationId !== op.mutationId
       accountMeta = {
         ...accountMeta,
         sync: {
           ...(accountMeta.sync ?? cleanMeta(null, currentDeviceId(device))),
-          dirty: false,
-          lastError: error,
+          dirty: hasNewerMutation,
+          lastError: hasNewerMutation ? undefined : error,
         },
       }
       internals.accountMeta = accountMeta
@@ -1172,12 +1215,14 @@ export function valtioSync<
       return
     }
 
+    const hasNewerMutation =
+      existing.meta.dirty === true && existing.meta.mutationId !== op.mutationId
     const rejectedRecord: StoredRecord = {
       ...existing,
       meta: {
         ...existing.meta,
-        dirty: false,
-        lastError: error,
+        dirty: hasNewerMutation,
+        lastError: hasNewerMutation ? undefined : error,
       },
     }
     persistStoredRecord(op.collection, rejectedRecord)
@@ -1454,7 +1499,7 @@ export function valtioSync<
         id,
       }) as JsonRecord
       const touched = unique(['id', ...Object.keys(mutation.value)])
-      const meta = dirtyMeta(cleanMeta(null, currentDeviceId(device)), touched)
+      const meta = markMetaDirty(cleanMeta(null, currentDeviceId(device)), touched)
 
       runWithoutTracking(() => {
         collectionState.records[id] = parsed
@@ -1492,7 +1537,7 @@ export function valtioSync<
       persistStoredRecord(collection, {
         id: mutation.id,
         data: parsed,
-        meta: dirtyMeta(
+        meta: markMetaDirty(
           existing?.meta ?? cleanMeta(null, currentDeviceId(device)),
           Object.keys(patch),
         ),
@@ -1513,7 +1558,12 @@ export function valtioSync<
       delete collectionState.records[mutation.id]
     })
 
-    if (existing && existing.meta.serverVersion == null && existing.meta.dirty) {
+    if (
+      existing &&
+      existing.meta.serverVersion == null &&
+      existing.meta.dirty &&
+      !isMutationInFlight(existing.meta)
+    ) {
       storedRecords.delete(key)
       recordMeta.delete(key)
       enqueueStorageWrite(async () => {
@@ -1533,7 +1583,7 @@ export function valtioSync<
       id: mutation.id,
       data: existing?.data ?? current ?? ({ id: mutation.id } as JsonRecord),
       meta: {
-        ...dirtyMeta(existing?.meta ?? cleanMeta(null, currentDeviceId(device)), []),
+        ...markMetaDirty(existing?.meta ?? cleanMeta(null, currentDeviceId(device)), []),
         deleted: true,
       },
     }
@@ -1552,7 +1602,10 @@ export function valtioSync<
       internals.accountData = parsed
       accountMeta = {
         ...accountMeta,
-        sync: dirtyMeta(accountMeta.sync ?? cleanMeta(null, currentDeviceId(device)), touched),
+        sync: markMetaDirty(
+          accountMeta.sync ?? cleanMeta(null, currentDeviceId(device)),
+          touched,
+        ),
       }
       internals.accountMeta = accountMeta
       enqueueStorageWrite(() =>
@@ -1629,7 +1682,10 @@ export function valtioSync<
         persistStoredRecord(collection, {
           id,
           data: parsed,
-          meta: dirtyMeta(existing?.meta ?? cleanMeta(null, currentDeviceId(device)), touched),
+          meta: markMetaDirty(
+            existing?.meta ?? cleanMeta(null, currentDeviceId(device)),
+            touched,
+          ),
         })
         markDirtyState()
       } catch (error) {
@@ -1711,6 +1767,14 @@ export function valtioSync<
     } finally {
       trackingPaused = false
     }
+  }
+
+  function isMutationInFlight(meta: StoredRecord['meta']) {
+    return meta.mutationId !== undefined && inFlightMutationIds.has(meta.mutationId)
+  }
+
+  function markMetaDirty(previous: StoredRecord['meta'], touched: string[]) {
+    return dirtyMeta(previous, touched, isMutationInFlight(previous))
   }
 
   async function adoptLocalData(
@@ -2227,15 +2291,24 @@ function cleanMeta(serverVersion: number | null, updatedByDevice: string): Store
   }
 }
 
-function dirtyMeta(previous: StoredRecord['meta'], touched: string[]): StoredRecord['meta'] {
-  const nextTouched = unique([...(previous.touched ?? []), ...touched])
+function dirtyMeta(
+  previous: StoredRecord['meta'],
+  touched: string[],
+  supersedesInFlightMutation = false,
+): StoredRecord['meta'] {
+  const nextTouched = supersedesInFlightMutation
+    ? unique(touched)
+    : unique([...(previous.touched ?? []), ...touched])
   return {
     ...previous,
     dirty: true,
     deleted: false,
     baseServerVersion: previous.dirty ? previous.baseServerVersion : previous.serverVersion,
     updatedAtClient: Date.now(),
-    mutationId: previous.mutationId ?? createMutationId(),
+    mutationId:
+      supersedesInFlightMutation || !previous.mutationId
+        ? createMutationId()
+        : previous.mutationId,
     touched: nextTouched,
     lastError: undefined,
   }
@@ -2261,6 +2334,13 @@ function pickTouched(record: JsonRecord, touched: string[]): JsonRecord {
     }
   }
   return picked
+}
+
+function overlayTouched(base: JsonRecord, local: JsonRecord, touched: string[]): JsonRecord {
+  return {
+    ...base,
+    ...pickTouched(local, touched),
+  }
 }
 
 function changedFields(previous: JsonRecord | undefined, current: JsonRecord): string[] {

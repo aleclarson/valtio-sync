@@ -106,6 +106,259 @@ test('accepted create applies canonical record and clears dirty state', async ()
   })
 })
 
+test('accepted update preserves a newer mutation made while sync is in flight', async () => {
+  const storage = createMemorySyncStorage({
+    collections: {
+      todos: [makeStoredTodo('todo_1', 'Base')],
+    },
+  })
+  const requestStarted = Promise.withResolvers<void>()
+  const responseReady = Promise.withResolvers<void>()
+  let request!: {
+    ops: Array<{ mutationId: string; collection: string; id: string }>
+  }
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemoryStorageAdapter(),
+    fetch: async (_input, init) => {
+      request = JSON.parse(String(init?.body))
+      requestStarted.resolve()
+      await responseReady.promise
+      return jsonResponse({
+        serverSeq: 2,
+        accepted: [
+          {
+            mutationId: request.ops[0].mutationId,
+            collection: request.ops[0].collection,
+            id: request.ops[0].id,
+            serverVersion: 2,
+            record: {
+              id: 'todo_1',
+              title: 'Canonical',
+              completed: false,
+            },
+          },
+        ],
+        rejected: [],
+        changes: {},
+      })
+    },
+  })
+  await vs.hydrate({ namespace: 'in-flight-update', storage, broadcast: false })
+
+  vs.todos.update('todo_1', { title: 'Sent' })
+  const syncing = vs.sync()
+  await requestStarted.promise
+  vs.todos.update('todo_1', { completed: true })
+  responseReady.resolve()
+  await syncing
+
+  expect(vs.todos.get('todo_1')).toEqual({
+    id: 'todo_1',
+    title: 'Canonical',
+    completed: true,
+  })
+  expect(vs.debug.getPendingOps()).toMatchObject([
+    {
+      collection: 'todos',
+      type: 'update',
+      id: 'todo_1',
+      patch: { completed: true },
+      touched: ['completed'],
+      baseServerVersion: 2,
+    },
+  ])
+  expect(vs.debug.getRecordMeta(vs.todos, 'todo_1')).toMatchObject({
+    dirty: true,
+    serverVersion: 2,
+    baseServerVersion: 2,
+  })
+  expect(await storage.readRecord('todos', 'todo_1')).toMatchObject({
+    data: {
+      title: 'Canonical',
+      completed: true,
+    },
+    meta: {
+      dirty: true,
+      serverVersion: 2,
+      baseServerVersion: 2,
+      touched: ['completed'],
+    },
+  })
+})
+
+test('accepted account update preserves newer account state over a canonical response', async () => {
+  const storage = createMemorySyncStorage({
+    account: {
+      data: { theme: 'light' },
+      meta: {
+        schemaVersion: 1,
+        lastServerSeq: 1,
+        sync: {
+          dirty: false,
+          deleted: false,
+          serverVersion: 1,
+          baseServerVersion: 1,
+          updatedAtClient: 0,
+          updatedByDevice: 'device_1',
+          lastSyncedAt: 0,
+          touched: [],
+        },
+      },
+    },
+  })
+  const requestStarted = Promise.withResolvers<void>()
+  const responseReady = Promise.withResolvers<void>()
+  let request!: {
+    ops: Array<{ mutationId: string; collection: string; id: string }>
+  }
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemoryStorageAdapter(),
+    fetch: async (_input, init) => {
+      request = JSON.parse(String(init?.body))
+      requestStarted.resolve()
+      await responseReady.promise
+      return jsonResponse({
+        serverSeq: 2,
+        accepted: [
+          {
+            mutationId: request.ops[0].mutationId,
+            collection: request.ops[0].collection,
+            id: request.ops[0].id,
+            serverVersion: 2,
+            record: { theme: 'dark' },
+          },
+        ],
+        rejected: [],
+        changes: {},
+      })
+    },
+  })
+  await vs.hydrate({ namespace: 'in-flight-account', storage, broadcast: false })
+
+  vs.account.theme = 'dark'
+  const syncing = vs.sync()
+  await requestStarted.promise
+  vs.account.theme = 'light'
+  responseReady.resolve()
+  await syncing
+
+  expect(vs.account).toMatchObject({ theme: 'light' })
+  expect(vs.debug.getPendingOps()).toMatchObject([
+    {
+      collection: 'account',
+      type: 'update',
+      id: 'singleton',
+      patch: { theme: 'light' },
+      touched: ['theme'],
+      baseServerVersion: 2,
+    },
+  ])
+  expect((await storage.readAccount())?.meta.sync).toMatchObject({
+    dirty: true,
+    serverVersion: 2,
+    baseServerVersion: 2,
+    touched: ['theme'],
+  })
+})
+
+test('accepted create retains a delete made while the create is in flight', async () => {
+  const storage = createMemorySyncStorage()
+  const requestStarted = Promise.withResolvers<void>()
+  const responseReady = Promise.withResolvers<void>()
+  let request!: {
+    ops: Array<{ mutationId: string; collection: string; id: string }>
+  }
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemoryStorageAdapter(),
+    fetch: async (_input, init) => {
+      request = JSON.parse(String(init?.body))
+      requestStarted.resolve()
+      await responseReady.promise
+      return jsonResponse({
+        serverSeq: 1,
+        accepted: [
+          {
+            mutationId: request.ops[0].mutationId,
+            collection: request.ops[0].collection,
+            id: request.ops[0].id,
+            serverVersion: 1,
+          },
+        ],
+        rejected: [],
+        changes: {},
+      })
+    },
+  })
+  await vs.hydrate({ namespace: 'in-flight-create-delete', storage, broadcast: false })
+
+  vs.todos.create({ id: 'todo_1', title: 'Transient' })
+  const syncing = vs.sync()
+  await requestStarted.promise
+  vs.todos.delete('todo_1')
+  responseReady.resolve()
+  await syncing
+
+  expect(vs.todos.get('todo_1')).toBeUndefined()
+  expect(vs.debug.getPendingOps()).toMatchObject([
+    {
+      collection: 'todos',
+      type: 'delete',
+      id: 'todo_1',
+      baseServerVersion: 1,
+    },
+  ])
+  expect(await storage.readRecord('todos', 'todo_1')).toMatchObject({
+    meta: {
+      dirty: true,
+      deleted: true,
+      serverVersion: 1,
+      baseServerVersion: 1,
+    },
+  })
+})
+
+test('overlapping sync calls share one transport attempt', async () => {
+  const responseReady = Promise.withResolvers<void>()
+  const fetchSync = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const request = JSON.parse(String(init?.body))
+    await responseReady.promise
+    return jsonResponse({
+      serverSeq: 1,
+      accepted: request.ops.map((op: Record<string, unknown>) => ({
+        mutationId: op.mutationId,
+        collection: op.collection,
+        id: op.id,
+        serverVersion: 1,
+      })),
+      rejected: [],
+      changes: {},
+    })
+  })
+  const vs = valtioSync({
+    endpoint: '/api/sync',
+    schema: { account, todos },
+    storage: createMemoryStorageAdapter({ namespace: 'overlapping-sync' }),
+    fetch: fetchSync,
+  })
+  await vs.hydrate()
+  vs.todos.create({ id: 'todo_1', title: 'Local' })
+
+  const first = vs.sync()
+  const second = vs.sync()
+  await vi.waitFor(() => expect(fetchSync).toHaveBeenCalledTimes(1))
+  responseReady.resolve()
+  await Promise.all([first, second])
+
+  expect(fetchSync).toHaveBeenCalledTimes(1)
+  expect(vs.status.dirty).toBe(false)
+})
+
 test('rejected validation keeps optimistic value and stops retrying', async () => {
   const fetchSync = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
     const request = JSON.parse(String(init?.body))
