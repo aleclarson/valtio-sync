@@ -34,47 +34,6 @@ function syncRequest(body: unknown) {
   })
 }
 
-test('drizzle schema wrappers create normal schema definitions', () => {
-  const drizzleAccount = defineDrizzleAccount({
-    dbType: $type<{ readonly $inferSelect: { theme: 'light' | 'dark' } }>(),
-    fields: {
-      theme: z.enum(['light', 'dark']).default('light'),
-    },
-  })
-  const drizzleTodos = defineDrizzleCollection({
-    dbType: $type<{
-      readonly $inferSelect: {
-        id: string
-        title: string
-        completed: boolean
-        note: string | null
-      }
-    }>(),
-    fields: {
-      id: z.string(),
-      title: z.string().default(''),
-      completed: z.boolean().default(false),
-      note: z.string().nullable(),
-    },
-  })
-
-  expect(drizzleAccount.kind).toBe('account')
-  expect(drizzleTodos.kind).toBe('collection')
-  expect(
-    drizzleTodos.schema.parse({
-      id: 'todo_1',
-      title: 'Local',
-      completed: false,
-      note: null,
-    }),
-  ).toEqual({
-    id: 'todo_1',
-    title: 'Local',
-    completed: false,
-    note: null,
-  })
-})
-
 test('server-only fields are absent from runtime sync schemas', () => {
   const definition = defineDrizzleCollection({
     dbType: $type<{

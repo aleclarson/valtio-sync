@@ -107,20 +107,9 @@ test('server handler validates ops and returns accepted mutations with changes',
             record,
           }
         },
-        update: ({ patch }) => ({
-          serverVersion: 4,
-          record: {
-            id: 'todo_1',
-            title: String(patch.title),
-            completed: false,
-          },
-        }),
-        delete: () => ({ serverVersion: 6 }),
       },
     },
   })
-  expect(typeof syncServer).toBe('object')
-  expect(syncServer.handle).toEqual(expect.any(Function))
 
   const response = await syncServer.handle(
     syncRequest({

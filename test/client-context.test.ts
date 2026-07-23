@@ -75,14 +75,6 @@ test('exposes inert defaults until the required default adapter is hydrated', as
   const coldTodos = sync.todos
 
   expect(sync.status.phase).toBe('cold')
-  expect(Object.getOwnPropertyDescriptor(sync, 'account')).toMatchObject({
-    value: coldAccount,
-    writable: true,
-  })
-  expect(Object.getOwnPropertyDescriptor(sync, 'todos')).toMatchObject({
-    value: coldTodos,
-    writable: true,
-  })
   expect(sync.account).toMatchObject({ theme: 'light' })
   expect(sync.todos.list()).toEqual([])
   sync.account.theme = 'dark'

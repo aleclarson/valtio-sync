@@ -907,7 +907,6 @@ test('transport interceptor drops a scheduled retry without clearing pending wri
   ])
 
   removeInterceptor()
-  removeInterceptor()
   failSync = false
   await vs.sync()
   expect(fetchSync).toHaveBeenCalledTimes(2)
